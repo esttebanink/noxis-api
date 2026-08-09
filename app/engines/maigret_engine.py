@@ -3,8 +3,9 @@ from pathlib import Path
 from typing import Any
 
 import maigret
+from maigret.checking import maigret as maigret_search
 from maigret.sites import MaigretDatabase
-from maigret.result import QueryStatus
+from maigret.result import MaigretCheckStatus
 
 
 logger = logging.getLogger("noxis.maigret")
@@ -22,7 +23,7 @@ async def search_username(username: str, limit: int = 20) -> dict[str, Any]:
 
     if not database_path.exists():
         raise FileNotFoundError(
-            f"No se encontró la base de sitios de Maigret en: {database_path}"
+            f"No se encontró data.json en {database_path}"
         )
 
     database = MaigretDatabase().load_from_path(str(database_path))
@@ -33,13 +34,14 @@ async def search_username(username: str, limit: int = 20) -> dict[str, Any]:
         id_type="username",
     )
 
-    results = await maigret.search(
-        username=username,
-        site_dict=sites,
+    results = await maigret_search(
+        username,
+        sites,
+        logger,
         timeout=10,
-        logger=logger,
         id_type="username",
-        cookies=None,
+        no_progressbar=True,
+        max_connections=20,
     )
 
     normalized = []
@@ -50,9 +52,9 @@ async def search_username(username: str, limit: int = 20) -> dict[str, Any]:
         if status_obj is None:
             continue
 
-        if status_obj.status == QueryStatus.CLAIMED:
+        if status_obj.status == MaigretCheckStatus.CLAIMED:
             status = "found"
-        elif status_obj.status == QueryStatus.AVAILABLE:
+        elif status_obj.status == MaigretCheckStatus.AVAILABLE:
             status = "not_found"
         else:
             status = "error"
@@ -66,8 +68,7 @@ async def search_username(username: str, limit: int = 20) -> dict[str, Any]:
         })
 
     found = [
-        item
-        for item in normalized
+        item for item in normalized
         if item["status"] == "found"
     ]
 
