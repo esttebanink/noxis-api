@@ -21,14 +21,25 @@ app.add_middleware(
 
 
 class UsernameSearchRequest(BaseModel):
-    username: str = Field(min_length=1, max_length=40)
-    limit: int = Field(default=20, ge=1, le=100)
+    username: str = Field(
+        min_length=1,
+        max_length=40,
+        description="Username o alias a analizar"
+    )
+
+    limit: int = Field(
+        default=100,
+        ge=1,
+        le=5000,
+        description="Cantidad máxima de servicios a analizar"
+    )
 
 
 @app.get("/")
 async def root():
     return {
         "name": "NOXIS API",
+        "platform": "NOXIS OSINT Intelligence Platform",
         "version": "Alpha 0.1",
         "status": "online"
     }
@@ -41,7 +52,13 @@ async def health():
         "platform": "NOXIS",
         "engine": {
             "name": "Maigret",
-            "connected": True
+            "connected": True,
+            "mode": "live"
+        },
+        "capabilities": {
+            "username_search": True,
+            "profile_enrichment": True,
+            "max_requested_sites": 5000
         }
     }
 
@@ -49,10 +66,23 @@ async def health():
 @app.post("/api/v1/search/username")
 async def username_search(payload: UsernameSearchRequest):
     try:
-        return await search_username(
-            username=payload.username,
+        username = payload.username.strip().lstrip("@")
+
+        if not username:
+            raise HTTPException(
+                status_code=400,
+                detail="El username no puede estar vacío."
+            )
+
+        result = await search_username(
+            username=username,
             limit=payload.limit
         )
+
+        return result
+
+    except HTTPException:
+        raise
 
     except ValueError as exc:
         raise HTTPException(
