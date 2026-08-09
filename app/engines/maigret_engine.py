@@ -14,35 +14,92 @@ logger.setLevel(logging.WARNING)
 
 
 def clean_metadata(result: dict) -> dict[str, Any]:
+    """
+    Conserva únicamente metadata pública serializable
+    obtenida realmente por Maigret.
+    """
     metadata: dict[str, Any] = {}
 
     raw = result.get("ids_data")
 
-    if isinstance(raw, dict):
-        for key, value in raw.items():
-            if value in (None, "", [], {}):
-                continue
+    if not isinstance(raw, dict):
+        return metadata
 
-            if isinstance(value, (str, int, float, bool)):
-                metadata[key] = value
+    for key, value in raw.items():
+        if value in (None, "", [], {}):
+            continue
 
-            elif isinstance(value, list):
-                metadata[key] = [
-                    item
-                    for item in value
-                    if isinstance(item, (str, int, float, bool))
-                ]
+        if isinstance(value, (str, int, float, bool)):
+            metadata[key] = value
+
+        elif isinstance(value, list):
+            clean_list = [
+                item
+                for item in value
+                if isinstance(item, (str, int, float, bool))
+            ]
+
+            if clean_list:
+                metadata[key] = clean_list
 
     return metadata
 
 
-async def search_username(username: str, limit: int = 20) -> dict[str, Any]:
+def classify_category(tags: list[str]) -> str:
+    """
+    Convierte los tags de Maigret en categorías
+    normalizadas utilizadas por NOXIS.
+    """
+    normalized_tags = {
+        str(tag).strip().lower()
+        for tag in tags
+    }
+
+    if "coding" in normalized_tags:
+        return "Desarrollo"
+
+    if "professional" in normalized_tags:
+        return "Profesional"
+
+    if "messaging" in normalized_tags:
+        return "Mensajería"
+
+    if "gaming" in normalized_tags or "game" in normalized_tags:
+        return "Gaming"
+
+    if "forum" in normalized_tags or "discussion" in normalized_tags:
+        return "Foros"
+
+    if "social" in normalized_tags:
+        return "Red social"
+
+    if (
+        "video" in normalized_tags
+        or "photo" in normalized_tags
+        or "music" in normalized_tags
+        or "art" in normalized_tags
+        or "blog" in normalized_tags
+    ):
+        return "Contenido"
+
+    return "Otros"
+
+
+async def search_username(
+    username: str,
+    limit: int = 20
+) -> dict[str, Any]:
+
     started_at = time.perf_counter()
 
     username = username.strip().lstrip("@")
 
     if not username:
         raise ValueError("Username vacío")
+
+    # --------------------------------------------------
+    # BASE DE DATOS DE MAIGRET
+    # --------------------------------------------------
 
     maigret_package = Path(maigret.__file__).resolve().parent
     database_path = maigret_package / "resources" / "data.json"
@@ -52,7 +109,13 @@ async def search_username(username: str, limit: int = 20) -> dict[str, Any]:
             f"No se encontró data.json en {database_path}"
         )
 
-    database = MaigretDatabase().load_from_path(str(database_path))
+    database = MaigretDatabase().load_from_path(
+        str(database_path)
+    )
+
+    # --------------------------------------------------
+    # SELECCIÓN DE SERVICIOS
+    # --------------------------------------------------
 
     ranked_sites = database.ranked_sites_dict(
         top=limit,
@@ -60,7 +123,16 @@ async def search_username(username: str, limit: int = 20) -> dict[str, Any]:
         id_type="username",
     )
 
-    sites = dict(list(ranked_sites.items())[:limit])
+    # Maigret puede añadir mirrors al ranking.
+    # NOXIS aplica un límite estricto para controlar
+    # recursos en Render.
+    sites = dict(
+        list(ranked_sites.items())[:limit]
+    )
+
+    # --------------------------------------------------
+    # BÚSQUEDA REAL + PARSING
+    # --------------------------------------------------
 
     results = await maigret_search(
         username,
@@ -70,15 +142,21 @@ async def search_username(username: str, limit: int = 20) -> dict[str, Any]:
         id_type="username",
         no_progressbar=True,
         max_connections=min(limit, 20),
+        is_parsing_enabled=True,
     )
 
-    normalized = []
+    # --------------------------------------------------
+    # NORMALIZACIÓN NOXIS
+    # --------------------------------------------------
+
+    normalized_results = []
 
     found_count = 0
     not_found_count = 0
     error_count = 0
 
     for site_name, result in results.items():
+
         status_obj = result.get("status")
 
         if status_obj is None:
@@ -97,9 +175,16 @@ async def search_username(username: str, limit: int = 20) -> dict[str, Any]:
             status = "error"
             error_count += 1
 
-        site_info = sites.get(site_name)
+        # --------------------------------------------------
+        # TAGS
+        # --------------------------------------------------
 
         tags = result.get("tags", [])
+
+        if not isinstance(tags, list):
+            tags = []
+
+        site_info = sites.get(site_name)
 
         if site_info:
             site_tags = getattr(site_info, "tags", None)
@@ -107,36 +192,70 @@ async def search_username(username: str, limit: int = 20) -> dict[str, Any]:
             if site_tags:
                 tags = list(site_tags)
 
+        # --------------------------------------------------
+        # CATEGORÍA NOXIS
+        # --------------------------------------------------
+
+        category = classify_category(tags)
+
+        # --------------------------------------------------
+        # METADATA PÚBLICA
+        # --------------------------------------------------
+
         metadata = clean_metadata(result)
 
-        normalized.append({
-            "site": site_name,
-            "username": username,
-            "url": result.get("url_user"),
-            "status": status,
-            "category": "Otros",
-            "tags": tags,
-            "metadata": metadata,
-        })
+        # --------------------------------------------------
+        # RESULTADO NORMALIZADO
+        # --------------------------------------------------
 
-    duration = round(time.perf_counter() - started_at, 2)
+        normalized_results.append(
+            {
+                "site": site_name,
+                "username": username,
+                "url": result.get("url_user"),
+                "status": status,
+                "category": category,
+                "tags": tags,
+                "metadata": metadata,
+            }
+        )
+
+    # --------------------------------------------------
+    # DURACIÓN
+    # --------------------------------------------------
+
+    duration = round(
+        time.perf_counter() - started_at,
+        2
+    )
+
+    # --------------------------------------------------
+    # RESPUESTA NOXIS
+    # --------------------------------------------------
 
     return {
         "username": username,
+
         "engine": {
             "id": "maigret",
             "name": "Maigret",
             "mode": "live",
         },
+
         "status": "completed",
+
         "requested_limit": limit,
-        "sites_checked": len(normalized),
+
+        "sites_checked": len(normalized_results),
+
         "summary": {
             "found": found_count,
             "not_found": not_found_count,
             "errors": error_count,
-            "total": len(normalized),
+            "total": len(normalized_results),
         },
+
         "duration_seconds": duration,
-        "results": normalized,
+
+        "results": normalized_results,
     }
