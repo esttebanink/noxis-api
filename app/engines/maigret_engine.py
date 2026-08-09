@@ -13,6 +13,29 @@ logger = logging.getLogger("noxis.maigret")
 logger.setLevel(logging.WARNING)
 
 
+def clean_metadata(result: dict) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+
+    raw = result.get("ids_data")
+
+    if isinstance(raw, dict):
+        for key, value in raw.items():
+            if value in (None, "", [], {}):
+                continue
+
+            if isinstance(value, (str, int, float, bool)):
+                metadata[key] = value
+
+            elif isinstance(value, list):
+                metadata[key] = [
+                    item
+                    for item in value
+                    if isinstance(item, (str, int, float, bool))
+                ]
+
+    return metadata
+
+
 async def search_username(username: str, limit: int = 20) -> dict[str, Any]:
     started_at = time.perf_counter()
 
@@ -21,7 +44,6 @@ async def search_username(username: str, limit: int = 20) -> dict[str, Any]:
     if not username:
         raise ValueError("Username vacío")
 
-    # Base de datos oficial incluida en el paquete Maigret
     maigret_package = Path(maigret.__file__).resolve().parent
     database_path = maigret_package / "resources" / "data.json"
 
@@ -32,14 +54,12 @@ async def search_username(username: str, limit: int = 20) -> dict[str, Any]:
 
     database = MaigretDatabase().load_from_path(str(database_path))
 
-    # Maigret puede agregar mirrors además del top solicitado.
     ranked_sites = database.ranked_sites_dict(
         top=limit,
         disabled=False,
         id_type="username",
     )
 
-    # NOXIS aplica un límite estricto para controlar recursos.
     sites = dict(list(ranked_sites.items())[:limit])
 
     results = await maigret_search(
@@ -79,7 +99,6 @@ async def search_username(username: str, limit: int = 20) -> dict[str, Any]:
 
         site_info = sites.get(site_name)
 
-        category = "Otros"
         tags = result.get("tags", [])
 
         if site_info:
@@ -88,16 +107,17 @@ async def search_username(username: str, limit: int = 20) -> dict[str, Any]:
             if site_tags:
                 tags = list(site_tags)
 
-        normalized.append(
-            {
-                "site": site_name,
-                "username": username,
-                "url": result.get("url_user"),
-                "status": status,
-                "category": category,
-                "tags": tags,
-            }
-        )
+        metadata = clean_metadata(result)
+
+        normalized.append({
+            "site": site_name,
+            "username": username,
+            "url": result.get("url_user"),
+            "status": status,
+            "category": "Otros",
+            "tags": tags,
+            "metadata": metadata,
+        })
 
     duration = round(time.perf_counter() - started_at, 2)
 
