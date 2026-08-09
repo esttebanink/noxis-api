@@ -13,43 +13,90 @@ logger = logging.getLogger("noxis.maigret")
 logger.setLevel(logging.WARNING)
 
 
-def clean_metadata(result: dict) -> dict[str, Any]:
+def make_json_safe(value: Any) -> Any:
     """
-    Conserva únicamente metadata pública serializable
-    obtenida realmente por Maigret.
+    Convierte valores extraídos por Maigret en estructuras
+    seguras para devolver mediante JSON.
+    """
+    if value is None:
+        return None
+
+    if isinstance(value, (str, int, float, bool)):
+        return value
+
+    if isinstance(value, list):
+        return [
+            make_json_safe(item)
+            for item in value
+            if make_json_safe(item) is not None
+        ]
+
+    if isinstance(value, tuple):
+        return [
+            make_json_safe(item)
+            for item in value
+            if make_json_safe(item) is not None
+        ]
+
+    if isinstance(value, set):
+        return [
+            make_json_safe(item)
+            for item in value
+            if make_json_safe(item) is not None
+        ]
+
+    if isinstance(value, dict):
+        return {
+            str(key): make_json_safe(item)
+            for key, item in value.items()
+            if make_json_safe(item) is not None
+        }
+
+    return str(value)
+
+
+def extract_metadata(result: dict) -> dict[str, Any]:
+    """
+    Extrae metadata pública obtenida realmente por Maigret.
+
+    Maigret guarda ids_data principalmente dentro del
+    objeto status. También puede devolver ids_links e
+    ids_usernames en el resultado general.
     """
     metadata: dict[str, Any] = {}
 
-    raw = result.get("ids_data")
+    status_obj = result.get("status")
 
-    if not isinstance(raw, dict):
-        return metadata
+    if status_obj is not None:
+        ids_data = getattr(status_obj, "ids_data", None)
 
-    for key, value in raw.items():
-        if value in (None, "", [], {}):
-            continue
+        if isinstance(ids_data, dict):
+            for key, value in ids_data.items():
+                safe_value = make_json_safe(value)
 
-        if isinstance(value, (str, int, float, bool)):
-            metadata[key] = value
+                if safe_value not in (None, "", [], {}):
+                    metadata[str(key)] = safe_value
 
-        elif isinstance(value, list):
-            clean_list = [
-                item
-                for item in value
-                if isinstance(item, (str, int, float, bool))
-            ]
+    ids_links = result.get("ids_links")
 
-            if clean_list:
-                metadata[key] = clean_list
+    if ids_links:
+        safe_links = make_json_safe(ids_links)
+
+        if safe_links not in (None, "", [], {}):
+            metadata["links"] = safe_links
+
+    ids_usernames = result.get("ids_usernames")
+
+    if ids_usernames:
+        safe_usernames = make_json_safe(ids_usernames)
+
+        if safe_usernames not in (None, "", [], {}):
+            metadata["usernames"] = safe_usernames
 
     return metadata
 
 
 def classify_category(tags: list[str]) -> str:
-    """
-    Convierte los tags de Maigret en categorías
-    normalizadas utilizadas por NOXIS.
-    """
     normalized_tags = {
         str(tag).strip().lower()
         for tag in tags
@@ -98,7 +145,7 @@ async def search_username(
         raise ValueError("Username vacío")
 
     # --------------------------------------------------
-    # BASE DE DATOS DE MAIGRET
+    # BASE DE DATOS MAIGRET
     # --------------------------------------------------
 
     maigret_package = Path(maigret.__file__).resolve().parent
@@ -123,15 +170,12 @@ async def search_username(
         id_type="username",
     )
 
-    # Maigret puede añadir mirrors al ranking.
-    # NOXIS aplica un límite estricto para controlar
-    # recursos en Render.
     sites = dict(
         list(ranked_sites.items())[:limit]
     )
 
     # --------------------------------------------------
-    # BÚSQUEDA REAL + PARSING
+    # BÚSQUEDA + PARSING + ENRICH
     # --------------------------------------------------
 
     results = await maigret_search(
@@ -143,10 +187,11 @@ async def search_username(
         no_progressbar=True,
         max_connections=min(limit, 20),
         is_parsing_enabled=True,
+        is_enrich_enabled=True,
     )
 
     # --------------------------------------------------
-    # NORMALIZACIÓN NOXIS
+    # NORMALIZACIÓN
     # --------------------------------------------------
 
     normalized_results = []
@@ -192,21 +237,13 @@ async def search_username(
             if site_tags:
                 tags = list(site_tags)
 
-        # --------------------------------------------------
-        # CATEGORÍA NOXIS
-        # --------------------------------------------------
-
         category = classify_category(tags)
 
         # --------------------------------------------------
-        # METADATA PÚBLICA
+        # METADATA
         # --------------------------------------------------
 
-        metadata = clean_metadata(result)
-
-        # --------------------------------------------------
-        # RESULTADO NORMALIZADO
-        # --------------------------------------------------
+        metadata = extract_metadata(result)
 
         normalized_results.append(
             {
@@ -220,18 +257,10 @@ async def search_username(
             }
         )
 
-    # --------------------------------------------------
-    # DURACIÓN
-    # --------------------------------------------------
-
     duration = round(
         time.perf_counter() - started_at,
         2
     )
-
-    # --------------------------------------------------
-    # RESPUESTA NOXIS
-    # --------------------------------------------------
 
     return {
         "username": username,
