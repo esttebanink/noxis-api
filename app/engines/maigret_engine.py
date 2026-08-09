@@ -1,8 +1,14 @@
+import logging
 from pathlib import Path
 from typing import Any
 
 import maigret
 from maigret.sites import MaigretDatabase
+from maigret.result import QueryStatus
+
+
+logger = logging.getLogger("noxis.maigret")
+logger.setLevel(logging.WARNING)
 
 
 async def search_username(username: str, limit: int = 20) -> dict[str, Any]:
@@ -11,7 +17,6 @@ async def search_username(username: str, limit: int = 20) -> dict[str, Any]:
     if not username:
         raise ValueError("Username vacío")
 
-    # Base de datos incluida dentro del paquete Maigret instalado
     maigret_package = Path(maigret.__file__).resolve().parent
     database_path = maigret_package / "resources" / "data.json"
 
@@ -32,7 +37,9 @@ async def search_username(username: str, limit: int = 20) -> dict[str, Any]:
         username=username,
         site_dict=sites,
         timeout=10,
+        logger=logger,
         id_type="username",
+        cookies=None,
     )
 
     normalized = []
@@ -43,7 +50,12 @@ async def search_username(username: str, limit: int = 20) -> dict[str, Any]:
         if status_obj is None:
             continue
 
-        status = str(status_obj.status).lower()
+        if status_obj.status == QueryStatus.CLAIMED:
+            status = "found"
+        elif status_obj.status == QueryStatus.AVAILABLE:
+            status = "not_found"
+        else:
+            status = "error"
 
         normalized.append({
             "site": site_name,
@@ -56,7 +68,7 @@ async def search_username(username: str, limit: int = 20) -> dict[str, Any]:
     found = [
         item
         for item in normalized
-        if "claimed" in item["status"]
+        if item["status"] == "found"
     ]
 
     return {
