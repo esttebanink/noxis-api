@@ -1,22 +1,8 @@
 import os
 from typing import Any, Dict, Optional
+from urllib.parse import quote
 
 import requests
-
-
-# ============================================================
-# NOXIS - PHONEINFOGA ENGINE
-# ============================================================
-#
-# Conector entre NOXIS API y el microservicio PhoneInfoga
-# desplegado independientemente en Render.
-#
-# Servicio actual:
-# https://noxis-phoneinfoga.onrender.com
-#
-# Puede sobrescribirse mediante la variable de entorno:
-# PHONEINFOGA_URL
-# ============================================================
 
 
 DEFAULT_PHONEINFOGA_URL = "https://noxis-phoneinfoga.onrender.com"
@@ -29,13 +15,7 @@ PHONEINFOGA_URL = os.getenv(
 
 class PhoneInfogaEngine:
     """
-    Motor de integración de PhoneInfoga para NOXIS.
-
-    Este módulo NO ejecuta PhoneInfoga localmente.
-
-    Se comunica mediante HTTP con el microservicio
-    noxis-phoneinfoga desplegado en Render y devuelve
-    una respuesta normalizada para NOXIS.
+    Conector entre NOXIS API y el microservicio PhoneInfoga.
     """
 
     ENGINE_ID = "phoneinfoga"
@@ -54,10 +34,6 @@ class PhoneInfogaEngine:
 
         self.timeout = timeout
 
-    # ========================================================
-    # INFORMACIÓN DEL MOTOR
-    # ========================================================
-
     def engine_info(self) -> Dict[str, Any]:
         return {
             "id": self.ENGINE_ID,
@@ -66,293 +42,34 @@ class PhoneInfogaEngine:
             "service_url": self.base_url,
         }
 
-    # ========================================================
-    # HEALTH CHECK
-    # ========================================================
-
     def health(self) -> Dict[str, Any]:
         """
-        Comprueba si el servicio PhoneInfoga responde.
-
-        Algunos despliegues no poseen /health, por lo que
-        también se prueba la raíz del servicio.
+        PhoneInfoga expone /api/ como health endpoint.
         """
 
-        endpoints = [
-            "/health",
-            "/",
-        ]
-
-        attempts = []
-
-        for endpoint in endpoints:
-            url = f"{self.base_url}{endpoint}"
-
-            try:
-                response = requests.get(
-                    url,
-                    timeout=15,
-                )
-
-                attempts.append({
-                    "endpoint": endpoint,
-                    "status_code": response.status_code,
-                })
-
-                if response.status_code < 500:
-                    return {
-                        "available": True,
-                        "engine": self.engine_info(),
-                        "endpoint": endpoint,
-                        "status_code": response.status_code,
-                    }
-
-            except requests.RequestException as exc:
-                attempts.append({
-                    "endpoint": endpoint,
-                    "error": str(exc),
-                })
-
-        return {
-            "available": False,
-            "engine": self.engine_info(),
-            "attempts": attempts,
-        }
-
-    # ========================================================
-    # BÚSQUEDA
-    # ========================================================
-
-    def search(
-        self,
-        phone_number: str,
-        default_region: str = "AR",
-    ) -> Dict[str, Any]:
-        """
-        Consulta PhoneInfoga utilizando un número de teléfono.
-
-        Se prueban varios formatos de endpoint para permitir
-        compatibilidad con distintas versiones/configuraciones
-        del microservicio.
-        """
-
-        phone_number = self._normalize_input(phone_number)
-        default_region = (default_region or "AR").strip().upper()
-
-        if not phone_number:
-            return self._error_response(
-                phone_number="",
-                default_region=default_region,
-                error="phone_number_required",
-                message="Debe proporcionar un número de teléfono.",
+        try:
+            response = requests.get(
+                f"{self.base_url}/api/",
+                timeout=15,
             )
 
-        attempts = [
-            {
-                "method": "POST",
-                "endpoint": "/api/v1/scan",
-                "json": {
-                    "phone_number": phone_number,
-                    "default_region": default_region,
-                },
-            },
-            {
-                "method": "POST",
-                "endpoint": "/scan",
-                "json": {
-                    "phone_number": phone_number,
-                    "default_region": default_region,
-                },
-            },
-            {
-                "method": "POST",
-                "endpoint": "/api/scan",
-                "json": {
-                    "phone_number": phone_number,
-                    "default_region": default_region,
-                },
-            },
-            {
-                "method": "GET",
-                "endpoint": "/api/v1/scan",
-                "params": {
-                    "number": phone_number,
-                },
-            },
-            {
-                "method": "GET",
-                "endpoint": "/scan",
-                "params": {
-                    "number": phone_number,
-                },
-            },
-            {
-                "method": "GET",
-                "endpoint": "/api/scan",
-                "params": {
-                    "number": phone_number,
-                },
-            },
-        ]
+            return {
+                "available": response.status_code < 500,
+                "status_code": response.status_code,
+                "engine": self.engine_info(),
+            }
 
-        errors = []
-
-        for attempt in attempts:
-
-            endpoint = attempt["endpoint"]
-            method = attempt["method"]
-
-            url = f"{self.base_url}{endpoint}"
-
-            try:
-
-                if method == "POST":
-
-                    response = requests.post(
-                        url,
-                        json=attempt.get("json"),
-                        headers={
-                            "Accept": "application/json",
-                            "Content-Type": "application/json",
-                        },
-                        timeout=self.timeout,
-                    )
-
-                else:
-
-                    response = requests.get(
-                        url,
-                        params=attempt.get("params"),
-                        headers={
-                            "Accept": "application/json",
-                        },
-                        timeout=self.timeout,
-                    )
-
-                # Endpoint inexistente.
-                # Probamos automáticamente el siguiente.
-                if response.status_code == 404:
-
-                    errors.append({
-                        "method": method,
-                        "endpoint": endpoint,
-                        "status_code": 404,
-                    })
-
-                    continue
-
-                # Método incorrecto para ese endpoint.
-                if response.status_code == 405:
-
-                    errors.append({
-                        "method": method,
-                        "endpoint": endpoint,
-                        "status_code": 405,
-                    })
-
-                    continue
-
-                # Validación incompatible con ese endpoint.
-                if response.status_code == 422:
-
-                    errors.append({
-                        "method": method,
-                        "endpoint": endpoint,
-                        "status_code": 422,
-                        "response": self._safe_response(response),
-                    })
-
-                    continue
-
-                response.raise_for_status()
-
-                data = self._safe_response(response)
-
-                return self._success_response(
-                    phone_number=phone_number,
-                    default_region=default_region,
-                    endpoint=endpoint,
-                    method=method,
-                    data=data,
-                )
-
-            except requests.Timeout:
-
-                errors.append({
-                    "method": method,
-                    "endpoint": endpoint,
-                    "error": "timeout",
-                })
-
-            except requests.ConnectionError as exc:
-
-                errors.append({
-                    "method": method,
-                    "endpoint": endpoint,
-                    "error": "connection_error",
-                    "detail": str(exc),
-                })
-
-            except requests.RequestException as exc:
-
-                errors.append({
-                    "method": method,
-                    "endpoint": endpoint,
-                    "error": "request_error",
-                    "detail": str(exc),
-                })
-
-            except Exception as exc:
-
-                errors.append({
-                    "method": method,
-                    "endpoint": endpoint,
-                    "error": "unexpected_error",
-                    "detail": str(exc),
-                })
-
-        return self._error_response(
-            phone_number=phone_number,
-            default_region=default_region,
-            error="phoneinfoga_unavailable",
-            message=(
-                "No fue posible obtener resultados desde "
-                "el servicio PhoneInfoga."
-            ),
-            attempts=errors,
-        )
-
-    # ========================================================
-    # NORMALIZACIÓN
-    # ========================================================
-
-    def _normalize_input(self, phone_number: str) -> str:
-        """
-        Limpieza mínima.
-
-        La normalización E.164 definitiva corresponde al
-        Phone Intelligence Engine basado en libphonenumber.
-        """
-
-        if phone_number is None:
-            return ""
-
-        return str(phone_number).strip()
-
-    # ========================================================
-    # PARSEO SEGURO
-    # ========================================================
+        except requests.RequestException as exc:
+            return {
+                "available": False,
+                "engine": self.engine_info(),
+                "error": str(exc),
+            }
 
     def _safe_response(
         self,
         response: requests.Response,
     ) -> Any:
-        """
-        Intenta devolver JSON.
-
-        Si el servicio responde texto, devuelve el contenido
-        sin provocar un error.
-        """
 
         try:
             return response.json()
@@ -362,88 +79,196 @@ class PhoneInfogaEngine:
                 "raw": response.text,
             }
 
-    # ========================================================
-    # RESPUESTA CORRECTA
-    # ========================================================
+    def _call_endpoint(
+        self,
+        endpoint: str,
+    ) -> Dict[str, Any]:
 
-    def _success_response(
+        url = f"{self.base_url}{endpoint}"
+
+        try:
+            response = requests.get(
+                url,
+                headers={
+                    "Accept": "application/json",
+                    "User-Agent": "NOXIS-PhoneIntelligence",
+                },
+                timeout=self.timeout,
+            )
+
+            data = self._safe_response(response)
+
+            return {
+                "success": response.status_code < 400,
+                "status_code": response.status_code,
+                "endpoint": endpoint,
+                "data": data,
+            }
+
+        except requests.Timeout:
+            return {
+                "success": False,
+                "endpoint": endpoint,
+                "error": "timeout",
+            }
+
+        except requests.RequestException as exc:
+            return {
+                "success": False,
+                "endpoint": endpoint,
+                "error": "request_error",
+                "detail": str(exc),
+            }
+
+    def search(
         self,
         phone_number: str,
-        default_region: str,
-        endpoint: str,
-        method: str,
-        data: Any,
+        default_region: str = "AR",
     ) -> Dict[str, Any]:
+
+        phone_number = (phone_number or "").strip()
+
+        if not phone_number:
+            return {
+                "status": "error",
+                "engine": self.engine_info(),
+                "error": "phone_number_required",
+                "message": "Debe proporcionar un número de teléfono.",
+            }
+
+        encoded_number = quote(
+            phone_number,
+            safe="",
+        )
+
+        endpoints = {
+            "validation": (
+                f"/api/numbers/{encoded_number}/validate"
+            ),
+            "local": (
+                f"/api/numbers/{encoded_number}/scan/local"
+            ),
+            "google_search": (
+                f"/api/numbers/{encoded_number}/scan/googlesearch"
+            ),
+            "numverify": (
+                f"/api/numbers/{encoded_number}/scan/numverify"
+            ),
+            "ovh": (
+                f"/api/numbers/{encoded_number}/scan/ovh"
+            ),
+        }
+
+        scanner_results: Dict[str, Any] = {}
+        available_scanners = []
+        failed_scanners = []
+
+        for scanner_name, endpoint in endpoints.items():
+
+            result = self._call_endpoint(
+                endpoint
+            )
+
+            scanner_results[scanner_name] = result
+
+            if result.get("success"):
+                available_scanners.append(
+                    scanner_name
+                )
+            else:
+                failed_scanners.append(
+                    scanner_name
+                )
+
+        footprints = []
+
+        google_result = scanner_results.get(
+            "google_search",
+            {}
+        )
+
+        google_data = google_result.get(
+            "data"
+        )
+
+        if isinstance(google_data, dict):
+
+            for key in (
+                "results",
+                "links",
+                "urls",
+                "footprints",
+            ):
+                value = google_data.get(key)
+
+                if isinstance(value, list):
+                    footprints.extend(value)
+
+        elif isinstance(
+            google_data,
+            list
+        ):
+            footprints.extend(
+                google_data
+            )
+
+        unique_footprints = []
+        seen = set()
+
+        for item in footprints:
+
+            marker = str(item)
+
+            if marker in seen:
+                continue
+
+            seen.add(marker)
+            unique_footprints.append(item)
 
         return {
             "status": "completed",
+
             "phone_number": phone_number,
+
             "default_region": default_region,
+
             "engine": {
                 "id": self.ENGINE_ID,
                 "name": self.ENGINE_NAME,
                 "mode": "live",
             },
-            "service": {
-                "url": self.base_url,
-                "endpoint": endpoint,
-                "method": method,
-            },
-            "results": data,
-        }
 
-    # ========================================================
-    # RESPUESTA DE ERROR
-    # ========================================================
-
-    def _error_response(
-        self,
-        phone_number: str,
-        default_region: str,
-        error: str,
-        message: str,
-        attempts: Optional[list] = None,
-    ) -> Dict[str, Any]:
-
-        response = {
-            "status": "error",
-            "phone_number": phone_number,
-            "default_region": default_region,
-            "engine": {
-                "id": self.ENGINE_ID,
-                "name": self.ENGINE_NAME,
-                "mode": "live",
-            },
             "service": {
                 "url": self.base_url,
             },
-            "error": error,
-            "message": message,
+
+            "scanners": {
+                "available": available_scanners,
+                "failed": failed_scanners,
+            },
+
+            "scanner_results": scanner_results,
+
+            "public_footprints": unique_footprints,
+
+            "summary": {
+                "scanners_available": len(
+                    available_scanners
+                ),
+                "scanners_failed": len(
+                    failed_scanners
+                ),
+                "footprints_found": len(
+                    unique_footprints
+                ),
+            },
         }
 
-        if attempts is not None:
-            response["attempts"] = attempts
-
-        return response
-
-
-# ============================================================
-# FUNCIÓN SIMPLE PARA NOXIS
-# ============================================================
 
 def search_phoneinfoga(
     phone_number: str,
     default_region: str = "AR",
 ) -> Dict[str, Any]:
-    """
-    Punto de entrada simplificado.
-
-    Permite utilizar:
-
-        from app.engines.phoneinfoga_engine import search_phoneinfoga
-
-        result = search_phoneinfoga("+542932520063", "AR")
-    """
 
     engine = PhoneInfogaEngine()
 
@@ -453,11 +278,8 @@ def search_phoneinfoga(
     )
 
 
-# ============================================================
-# HEALTH CHECK SIMPLE
-# ============================================================
-
 def phoneinfoga_health() -> Dict[str, Any]:
+
     engine = PhoneInfogaEngine()
 
     return engine.health()
