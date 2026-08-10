@@ -1,11 +1,14 @@
 """
 NOXIS - PhoneInfoga Engine
 
-Conector entre NOXIS API y el servicio PhoneInfoga
-desplegado como microservicio independiente en Render.
+Connector between NOXIS API and the PhoneInfoga service
+deployed independently on Render.
+
+PhoneInfoga service:
+https://noxis-phoneinfoga.onrender.com
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 from urllib.parse import quote
 
 import requests
@@ -16,14 +19,14 @@ PHONEINFOGA_BASE_URL = "https://noxis-phoneinfoga.onrender.com"
 
 class PhoneInfogaEngine:
     """
-    Motor PhoneInfoga utilizado por NOXIS.
+    PhoneInfoga connector for NOXIS Phone Intelligence.
 
-    NOXIS conserva los números en formato E.164:
+    NOXIS uses E.164 numbers such as:
 
         +542932520063
 
-    Pero PhoneInfoga utiliza el número internacional
-    sin el signo "+" dentro de sus endpoints:
+    PhoneInfoga API endpoints expect the international
+    number without the leading "+" sign:
 
         542932520063
     """
@@ -37,7 +40,7 @@ class PhoneInfogaEngine:
         self.timeout = timeout
 
     # ============================================================
-    # INFORMACIÓN DEL MOTOR
+    # ENGINE INFORMATION
     # ============================================================
 
     def engine_info(self) -> Dict[str, Any]:
@@ -48,23 +51,20 @@ class PhoneInfogaEngine:
         }
 
     # ============================================================
-    # NORMALIZACIÓN PARA PHONEINFOGA
+    # NUMBER PREPARATION
     # ============================================================
 
-    def _prepare_number(
-        self,
-        phone_number: str,
-    ) -> str:
+    def _prepare_number(self, phone_number: str) -> str:
+        """
+        Convert a phone number into the format expected
+        by the PhoneInfoga HTTP API.
+        """
 
         if not phone_number:
             return ""
 
         number = str(phone_number).strip()
 
-        # PhoneInfoga espera el número internacional sin "+"
-        number = number.lstrip("+")
-
-        # Limpieza básica
         number = (
             number
             .replace(" ", "")
@@ -73,10 +73,13 @@ class PhoneInfogaEngine:
             .replace(")", "")
         )
 
+        # PhoneInfoga endpoints expect the number without "+"
+        number = number.lstrip("+")
+
         return number
 
     # ============================================================
-    # PETICIONES HTTP
+    # HTTP REQUEST
     # ============================================================
 
     def _request(
@@ -89,89 +92,70 @@ class PhoneInfogaEngine:
         url = f"{self.base_url}{endpoint}"
 
         try:
-
             response = requests.request(
                 method=method,
                 url=url,
                 timeout=self.timeout,
                 headers={
                     "Accept": "application/json",
-                    "User-Agent": "NOXIS-PhoneIntelligence",
+                    "User-Agent": "NOXIS-PhoneIntelligence/0.1",
                 },
                 **kwargs,
             )
 
-            status_code = response.status_code
-
             try:
                 data = response.json()
-
             except ValueError:
                 data = {
                     "raw": response.text
                 }
 
-            if status_code >= 400:
-
+            if response.status_code >= 400:
                 return {
                     "success": False,
-                    "status_code": status_code,
+                    "status_code": response.status_code,
                     "url": url,
                     "data": data,
                 }
 
             return {
                 "success": True,
-                "status_code": status_code,
+                "status_code": response.status_code,
                 "url": url,
                 "data": data,
             }
 
         except requests.Timeout:
-
             return {
                 "success": False,
                 "error": "timeout",
-                "message": (
-                    "PhoneInfoga excedió el tiempo máximo "
-                    "de respuesta."
-                ),
+                "message": "PhoneInfoga request timed out.",
                 "url": url,
             }
 
         except requests.ConnectionError as exc:
-
             return {
                 "success": False,
                 "error": "connection_error",
-                "message": (
-                    "No fue posible conectar con PhoneInfoga."
-                ),
+                "message": "Unable to connect to PhoneInfoga.",
                 "detail": str(exc),
                 "url": url,
             }
 
         except requests.RequestException as exc:
-
             return {
                 "success": False,
                 "error": "request_error",
-                "message": (
-                    "Error realizando la solicitud a PhoneInfoga."
-                ),
+                "message": "PhoneInfoga request failed.",
                 "detail": str(exc),
                 "url": url,
             }
 
         except Exception as exc:
-
             return {
                 "success": False,
                 "error": "unexpected_error",
-                "message": (
-                    "Se produjo un error inesperado "
-                    "en PhoneInfoga Engine."
-                ),
+                "message": "Unexpected PhoneInfoga Engine error.",
                 "detail": str(exc),
                 "url": url,
             }
@@ -181,6 +165,9 @@ class PhoneInfogaEngine:
     # ============================================================
 
     def health(self) -> Dict[str, Any]:
+        """
+        Check if the PhoneInfoga service is reachable.
+        """
 
         result = self._request(
             "GET",
@@ -196,26 +183,21 @@ class PhoneInfogaEngine:
         }
 
     # ============================================================
-    # VALIDACIÓN
+    # VALIDATION
     # ============================================================
 
-    def validate(
-        self,
-        phone_number: str,
-    ) -> Dict[str, Any]:
+    def validate(self, phone_number: str) -> Dict[str, Any]:
+        """
+        Validate the phone number using PhoneInfoga.
+        """
 
-        clean_number = self._prepare_number(
-            phone_number
-        )
+        clean_number = self._prepare_number(phone_number)
 
         if not clean_number:
-
             return {
                 "success": False,
                 "error": "empty_phone_number",
-                "message": (
-                    "No se proporcionó un número de teléfono."
-                ),
+                "message": "No phone number was provided.",
             }
 
         encoded_number = quote(
@@ -223,29 +205,28 @@ class PhoneInfogaEngine:
             safe="",
         )
 
+        endpoint = (
+            f"/api/numbers/"
+            f"{encoded_number}/validate"
+        )
+
         return self._request(
             "GET",
-            (
-                f"/api/numbers/"
-                f"{encoded_number}/validate"
-            ),
+            endpoint,
         )
 
     # ============================================================
-    # SCANNER LOCAL
+    # LOCAL SCANNER
     # ============================================================
 
-    def scan_local(
-        self,
-        phone_number: str,
-    ) -> Dict[str, Any]:
+    def scan_local(self, phone_number: str) -> Dict[str, Any]:
+        """
+        Run PhoneInfoga local scanner.
+        """
 
-        clean_number = self._prepare_number(
-            phone_number
-        )
+        clean_number = self._prepare_number(phone_number)
 
         if not clean_number:
-
             return {
                 "success": False,
                 "error": "empty_phone_number",
@@ -256,86 +237,177 @@ class PhoneInfogaEngine:
             safe="",
         )
 
+        endpoint = (
+            f"/api/numbers/"
+            f"{encoded_number}/scan/local"
+        )
+
         return self._request(
             "GET",
-            (
-                f"/api/numbers/"
-                f"{encoded_number}/scan/local"
-            ),
+            endpoint,
         )
 
     # ============================================================
-    # SCANNERS OPCIONALES
+    # GOOGLE SEARCH SCANNER
     # ============================================================
 
     def scan_google_search(
         self,
         phone_number: str,
     ) -> Dict[str, Any]:
+        """
+        Run PhoneInfoga Google Search scanner.
+        """
 
-        clean_number = self._prepare_number(
-            phone_number
-        )
+        clean_number = self._prepare_number(phone_number)
+
+        if not clean_number:
+            return {
+                "success": False,
+                "error": "empty_phone_number",
+            }
 
         encoded_number = quote(
             clean_number,
             safe="",
         )
 
+        endpoint = (
+            f"/api/numbers/"
+            f"{encoded_number}/scan/googlesearch"
+        )
+
         return self._request(
             "GET",
-            (
-                f"/api/numbers/"
-                f"{encoded_number}/scan/googlesearch"
-            ),
+            endpoint,
         )
+
+    # ============================================================
+    # NUMVERIFY SCANNER
+    # ============================================================
 
     def scan_numverify(
         self,
         phone_number: str,
     ) -> Dict[str, Any]:
+        """
+        Run PhoneInfoga Numverify scanner.
+        """
 
-        clean_number = self._prepare_number(
-            phone_number
-        )
+        clean_number = self._prepare_number(phone_number)
+
+        if not clean_number:
+            return {
+                "success": False,
+                "error": "empty_phone_number",
+            }
 
         encoded_number = quote(
             clean_number,
             safe="",
         )
 
+        endpoint = (
+            f"/api/numbers/"
+            f"{encoded_number}/scan/numverify"
+        )
+
         return self._request(
             "GET",
-            (
-                f"/api/numbers/"
-                f"{encoded_number}/scan/numverify"
-            ),
+            endpoint,
         )
+
+    # ============================================================
+    # OVH SCANNER
+    # ============================================================
 
     def scan_ovh(
         self,
         phone_number: str,
     ) -> Dict[str, Any]:
+        """
+        Run PhoneInfoga OVH scanner.
+        """
 
-        clean_number = self._prepare_number(
-            phone_number
-        )
+        clean_number = self._prepare_number(phone_number)
+
+        if not clean_number:
+            return {
+                "success": False,
+                "error": "empty_phone_number",
+            }
 
         encoded_number = quote(
             clean_number,
             safe="",
         )
 
+        endpoint = (
+            f"/api/numbers/"
+            f"{encoded_number}/scan/ovh"
+        )
+
         return self._request(
             "GET",
-            (
-                f"/api/numbers/"
-                f"{encoded_number}/scan/ovh"
-            ),
+            endpoint,
         )
 
     # ============================================================
-    # BÚSQUEDA PRINCIPAL
+    # PUBLIC FOOTPRINT EXTRACTION
+    # ============================================================
+
+    def _extract_public_footprints(
+        self,
+        scanner_results: Dict[str, Any],
+    ) -> list:
+        """
+        Extract possible public URLs/results from scanner responses.
+        """
+
+        footprints = []
+
+        google_result = scanner_results.get(
+            "google_search",
+            {},
+        )
+
+        google_data = google_result.get("data")
+
+        if isinstance(google_data, dict):
+
+            for key in (
+                "results",
+                "links",
+                "urls",
+                "footprints",
+            ):
+
+                value = google_data.get(key)
+
+                if isinstance(value, list):
+                    footprints.extend(value)
+
+        elif isinstance(google_data, list):
+
+            footprints.extend(google_data)
+
+        unique_footprints = []
+        seen = set()
+
+        for item in footprints:
+
+            marker = str(item)
+
+            if marker in seen:
+                continue
+
+            seen.add(marker)
+            unique_footprints.append(item)
+
+        return unique_footprints
+
+    # ============================================================
+    # MAIN SEARCH METHOD
     # ============================================================
 
     def search(
@@ -344,11 +416,10 @@ class PhoneInfogaEngine:
         default_region: str = "AR",
     ) -> Dict[str, Any]:
         """
-        Método utilizado por phone_engine.py.
+        Main PhoneInfoga method used by NOXIS.
 
-        IMPORTANTE:
-        este método debe llamarse search porque NOXIS actualmente
-        utiliza:
+        IMPORTANT:
+        phone_engine.py expects this exact method:
 
             phoneinfoga_engine.search(...)
         """
@@ -371,13 +442,11 @@ class PhoneInfogaEngine:
                 "default_region": default_region,
                 "engine": self.engine_info(),
                 "error": "empty_phone_number",
-                "message": (
-                    "No se proporcionó un número de teléfono."
-                ),
+                "message": "No phone number was provided.",
             }
 
         # --------------------------------------------------------
-        # VALIDACIÓN
+        # PHONEINFOGA VALIDATION
         # --------------------------------------------------------
 
         validation = self.validate(
@@ -396,11 +465,9 @@ class PhoneInfogaEngine:
                     "url": self.base_url,
                 },
                 "validation": validation,
-                "error": (
-                    "phoneinfoga_validation_failed"
-                ),
+                "error": "phoneinfoga_validation_failed",
                 "message": (
-                    "PhoneInfoga no pudo validar el número."
+                    "PhoneInfoga could not validate the phone number."
                 ),
             }
 
@@ -408,133 +475,58 @@ class PhoneInfogaEngine:
         # SCANNERS
         # --------------------------------------------------------
 
-        scanner_results = {}
-
-        scanner_results["local"] = (
-            self.scan_local(
+        scanner_results = {
+            "local": self.scan_local(
                 original_number
-            )
-        )
-
-        scanner_results["google_search"] = (
-            self.scan_google_search(
+            ),
+            "google_search": self.scan_google_search(
                 original_number
-            )
-        )
-
-        scanner_results["numverify"] = (
-            self.scan_numverify(
+            ),
+            "numverify": self.scan_numverify(
                 original_number
-            )
-        )
-
-        scanner_results["ovh"] = (
-            self.scan_ovh(
+            ),
+            "ovh": self.scan_ovh(
                 original_number
-            )
-        )
+            ),
+        }
 
-        available = []
-        failed = []
+        available_scanners = []
+        failed_scanners = []
 
-        for scanner_name, scanner_result in (
-            scanner_results.items()
-        ):
+        for scanner_name, scanner_result in scanner_results.items():
 
             if scanner_result.get("success"):
-
-                available.append(
+                available_scanners.append(
+                    scanner_name
+                )
+            else:
+                failed_scanners.append(
                     scanner_name
                 )
 
-            else:
-
-                failed.append(
-                    scanner_name
-                )
-
         # --------------------------------------------------------
-        # HUELLAS PÚBLICAS
+        # PUBLIC FOOTPRINTS
         # --------------------------------------------------------
 
-        public_footprints = []
-
-        google_result = scanner_results.get(
-            "google_search",
-            {}
+        public_footprints = self._extract_public_footprints(
+            scanner_results
         )
 
-        google_data = google_result.get(
-            "data"
-        )
-
-        if isinstance(
-            google_data,
-            dict,
-        ):
-
-            for key in (
-                "results",
-                "links",
-                "urls",
-                "footprints",
-            ):
-
-                value = google_data.get(
-                    key
-                )
-
-                if isinstance(
-                    value,
-                    list,
-                ):
-
-                    public_footprints.extend(
-                        value
-                    )
-
-        elif isinstance(
-            google_data,
-            list,
-        ):
-
-            public_footprints.extend(
-                google_data
-            )
-
-        # Eliminar duplicados
-        unique_footprints = []
-        seen = set()
-
-        for item in public_footprints:
-
-            marker = str(item)
-
-            if marker in seen:
-                continue
-
-            seen.add(marker)
-
-            unique_footprints.append(
-                item
-            )
-
         # --------------------------------------------------------
-        # STATUS REAL
+        # FINAL STATUS
         # --------------------------------------------------------
 
-        if available:
+        if available_scanners and not failed_scanners:
+            status = "completed"
 
-            if failed:
-                status = "partial"
-            else:
-                status = "completed"
+        elif available_scanners:
+            status = "partial"
 
         else:
             status = "partial"
 
         # --------------------------------------------------------
-        # RESPUESTA
+        # RESPONSE
         # --------------------------------------------------------
 
         return {
@@ -555,33 +547,29 @@ class PhoneInfogaEngine:
             "validation": validation,
 
             "scanners": {
-                "available": available,
-                "failed": failed,
+                "available": available_scanners,
+                "failed": failed_scanners,
             },
 
-            "scanner_results": (
-                scanner_results
-            ),
+            "scanner_results": scanner_results,
 
-            "public_footprints": (
-                unique_footprints
-            ),
+            "public_footprints": public_footprints,
 
             "summary": {
                 "scanners_available": len(
-                    available
+                    available_scanners
                 ),
                 "scanners_failed": len(
-                    failed
+                    failed_scanners
                 ),
                 "footprints_found": len(
-                    unique_footprints
+                    public_footprints
                 ),
             },
         }
 
     # ============================================================
-    # ALIAS SCAN
+    # SCAN ALIAS
     # ============================================================
 
     def scan(
@@ -590,7 +578,12 @@ class PhoneInfogaEngine:
         default_region: str = "AR",
     ) -> Dict[str, Any]:
         """
-        Alias adicional para compatibilidad futura.
+        Compatibility alias.
+
+        Both methods are intentionally available:
+
+            search()
+            scan()
         """
 
         return self.search(
@@ -600,20 +593,23 @@ class PhoneInfogaEngine:
 
 
 # ================================================================
-# INSTANCIA GLOBAL
+# GLOBAL ENGINE INSTANCE
 # ================================================================
 
 phoneinfoga_engine = PhoneInfogaEngine()
 
 
 # ================================================================
-# FUNCIONES PÚBLICAS
+# PUBLIC FUNCTIONS
 # ================================================================
 
 def search_phoneinfoga(
     phone_number: str,
     default_region: str = "AR",
 ) -> Dict[str, Any]:
+    """
+    Public helper for NOXIS.
+    """
 
     return phoneinfoga_engine.search(
         phone_number=phone_number,
@@ -621,6 +617,23 @@ def search_phoneinfoga(
     )
 
 
+def scan_phoneinfoga(
+    phone_number: str,
+    default_region: str = "AR",
+) -> Dict[str, Any]:
+    """
+    Alternative public helper.
+    """
+
+    return phoneinfoga_engine.scan(
+        phone_number=phone_number,
+        default_region=default_region,
+    )
+
+
 def phoneinfoga_health() -> Dict[str, Any]:
+    """
+    Public health-check helper.
+    """
 
     return phoneinfoga_engine.health()
