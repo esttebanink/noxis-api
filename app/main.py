@@ -4,19 +4,16 @@ NOXIS API
 
 Backend principal de NOXIS Intelligence Platform.
 
-Funciones actuales:
+Módulos actuales:
 - Username Intelligence mediante Maigret
-- Enriquecimiento de perfiles
+- Enriquecimiento de resultados
 - Phone Intelligence mediante libphonenumber
 - Phone OSINT mediante PhoneInfoga
 - Consolidación de footprints técnicos
 - Separación estricta entre:
-    * búsqueda disponible
+    * consulta OSINT disponible
     * señal técnica
     * coincidencia confirmada
-
-NOXIS no debe interpretar una consulta OSINT generada
-como una coincidencia real.
 """
 
 from __future__ import annotations
@@ -27,12 +24,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-
-# ================================================================
-# IMPORTS NOXIS
-# ================================================================
-
-from app.engines.maigret_engine import analyze_username
+from app.engines.maigret_engine import search_username
 from app.engines.phone_engine import analyze_phone
 
 
@@ -43,9 +35,8 @@ from app.engines.phone_engine import analyze_phone
 app = FastAPI(
     title="NOXIS API",
     description=(
-        "API de inteligencia OSINT para NOXIS. "
-        "Integra Username Intelligence, Maigret, "
-        "Phone Intelligence y PhoneInfoga."
+        "Backend de NOXIS OSINT Intelligence Platform. "
+        "Integra Maigret, Phone Intelligence y PhoneInfoga."
     ),
     version="0.3.0",
 )
@@ -69,7 +60,6 @@ app.add_middleware(
 # ================================================================
 
 class UsernameSearchRequest(BaseModel):
-
     username: str = Field(
         ...,
         min_length=1,
@@ -77,48 +67,35 @@ class UsernameSearchRequest(BaseModel):
     )
 
     limit: Optional[int] = Field(
-        default=None,
+        default=20,
         ge=1,
-        description=(
-            "Cantidad máxima de sitios a consultar. "
-            "Si se omite, el motor puede utilizar "
-            "su configuración predeterminada."
-        ),
+        le=500,
+        description="Cantidad máxima de servicios a consultar.",
     )
 
 
 class PhoneSearchRequest(BaseModel):
-
     phone_number: str = Field(
         ...,
         min_length=1,
-        description=(
-            "Número de teléfono en formato nacional "
-            "o internacional."
-        ),
+        description="Número de teléfono nacional o internacional.",
     )
 
     default_region: str = Field(
         default="AR",
         min_length=2,
         max_length=2,
-        description=(
-            "Código ISO de región utilizado cuando "
-            "el número no incluye código internacional."
-        ),
+        description="Código ISO de región por defecto.",
     )
 
 
 # ================================================================
-# UTILIDADES
+# PHONE HELPERS
 # ================================================================
 
 def _normalize_phone_status(
     phoneinfoga: Dict[str, Any],
 ) -> str:
-    """
-    Determina el estado real del motor PhoneInfoga.
-    """
 
     if not isinstance(phoneinfoga, dict):
         return "error"
@@ -141,12 +118,6 @@ def _normalize_phone_status(
 def _extract_phone_public_footprints(
     phoneinfoga: Dict[str, Any],
 ) -> list:
-    """
-    Extrae footprints generados por PhoneInfoga.
-
-    Estos elementos representan búsquedas OSINT disponibles.
-    NO deben considerarse coincidencias confirmadas.
-    """
 
     if not isinstance(phoneinfoga, dict):
         return []
@@ -165,9 +136,6 @@ def _extract_phone_public_footprints(
 def _extract_phone_footprint_groups(
     phoneinfoga: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """
-    Extrae grupos de footprints de PhoneInfoga.
-    """
 
     empty_groups = {
         "social_media": [],
@@ -203,9 +171,6 @@ def _extract_phone_footprint_groups(
 def _extract_phone_summary(
     phoneinfoga: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """
-    Genera un resumen uniforme para el frontend.
-    """
 
     default_summary = {
         "scanners_available": 0,
@@ -236,8 +201,9 @@ def _extract_phone_summary(
         summary
     )
 
-    # Por diseño:
-    # una búsqueda generada NO equivale a una coincidencia.
+    # Importante:
+    # una consulta generada NO equivale
+    # a una coincidencia confirmada.
     result["confirmed_matches"] = 0
 
     return result
@@ -246,13 +212,6 @@ def _extract_phone_summary(
 def _build_phone_reputation(
     footprint_groups: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """
-    Resume las fuentes disponibles para investigar reputación.
-
-    IMPORTANTE:
-    Esto no determina que un teléfono sea spam, fraude o legítimo.
-    Solamente indica que existen consultas OSINT disponibles.
-    """
 
     reputation_items = footprint_groups.get(
         "reputation",
@@ -291,19 +250,23 @@ async def root() -> Dict[str, Any]:
         "status": "ok",
         "platform": "NOXIS",
         "version": "0.3.0",
+
         "services": {
             "username_intelligence": True,
             "phone_intelligence": True,
         },
+
         "engines": {
             "maigret": {
                 "enabled": True,
                 "mode": "live",
             },
+
             "phonenumbers": {
                 "enabled": True,
                 "mode": "live",
             },
+
             "phoneinfoga": {
                 "enabled": True,
                 "mode": "live",
@@ -330,7 +293,7 @@ async def health() -> Dict[str, Any]:
 # ================================================================
 
 @app.post("/api/v1/search/username")
-async def search_username(
+async def username_search(
     request: UsernameSearchRequest,
 ) -> Dict[str, Any]:
 
@@ -343,39 +306,28 @@ async def search_username(
             detail="Username requerido.",
         )
 
+    limit = request.limit or 20
+
     try:
 
-        if request.limit is None:
-
-            result = await analyze_username(
-                username
-            )
-
-        else:
-
-            try:
-
-                result = await analyze_username(
-                    username,
-                    request.limit,
-                )
-
-            except TypeError:
-                # Compatibilidad con versiones del motor
-                # que solo reciben username.
-                result = await analyze_username(
-                    username
-                )
+        result = await search_username(
+            username=username,
+            limit=limit,
+        )
 
         return result
-
-    except HTTPException:
-        raise
 
     except ValueError as exc:
 
         raise HTTPException(
             status_code=400,
+            detail=str(exc),
+        )
+
+    except FileNotFoundError as exc:
+
+        raise HTTPException(
+            status_code=500,
             detail=str(exc),
         )
 
@@ -395,7 +347,7 @@ async def search_username(
 # ================================================================
 
 @app.post("/api/v1/search/phone")
-async def search_phone(
+async def phone_search(
     request: PhoneSearchRequest,
 ) -> Dict[str, Any]:
 
@@ -472,7 +424,7 @@ async def search_phone(
     )
 
     # ============================================================
-    # FOOTPRINTS
+    # FOOTPRINTS CONSOLIDADOS
     # ============================================================
 
     public_footprints = (
@@ -532,16 +484,17 @@ async def search_phone(
     }
 
     # ============================================================
-    # SEPARACIÓN DE EVIDENCIA
+    # EVIDENCE LAYER
     # ============================================================
 
     evidence = {
+
         "technical": {
             "status": "available",
             "confirmed": True,
             "description": (
-                "Información técnica derivada "
-                "de libphonenumber."
+                "Información técnica obtenida "
+                "mediante libphonenumber."
             ),
         },
 
@@ -566,17 +519,19 @@ async def search_phone(
             "count": 0,
             "confirmed": False,
             "description": (
-                "NOXIS no confirmó identidades "
-                "ni presencia del número en plataformas."
+                "NOXIS no confirmó identidad "
+                "ni presencia del número "
+                "en plataformas externas."
             ),
         },
     }
 
     # ============================================================
-    # RESPONSE CONSOLIDADA
+    # RESPUESTA FINAL
     # ============================================================
 
-    response = {
+    return {
+
         "input": result.get(
             "input",
             phone_number,
@@ -610,7 +565,7 @@ async def search_phone(
         "phoneinfoga": phoneinfoga,
 
         # --------------------------------------------------------
-        # RESULTADOS CONSOLIDADOS PARA EL FRONTEND
+        # RESULTADOS CONSOLIDADOS
         # --------------------------------------------------------
 
         "public_footprints": (
@@ -625,30 +580,31 @@ async def search_phone(
             osint_summary
         ),
 
-        "reputation": reputation,
+        "reputation": (
+            reputation
+        ),
 
-        # --------------------------------------------------------
-        # CAPA DE EVIDENCIA
-        # --------------------------------------------------------
-
-        "evidence": evidence,
+        "evidence": (
+            evidence
+        ),
     }
-
-    return response
 
 
 # ================================================================
-# API INFORMATION
+# API INFO
 # ================================================================
 
 @app.get("/api/v1/info")
 async def api_info() -> Dict[str, Any]:
 
     return {
+
         "platform": "NOXIS",
+
         "api_version": "0.3.0",
 
         "modules": {
+
             "username_intelligence": {
                 "enabled": True,
                 "engine": "Maigret",
