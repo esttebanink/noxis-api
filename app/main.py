@@ -4,47 +4,46 @@ NOXIS API
 
 Backend principal de NOXIS Intelligence Platform.
 
-Módulos actuales:
-- Username Intelligence mediante Maigret
-- Enriquecimiento de resultados
-- Phone Intelligence mediante libphonenumber
-- Phone OSINT mediante PhoneInfoga
-- Consolidación de footprints técnicos
-- Separación estricta entre:
-    * consulta OSINT disponible
-    * señal técnica
-    * coincidencia confirmada
+Motores:
+- Maigret: Username Intelligence
+- Google libphonenumber: Phone Intelligence
+- PhoneInfoga: Phone OSINT
+
+Principio:
+Una coincidencia técnica o una consulta OSINT disponible
+NO implica identidad confirmada.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+# ============================================================
+# NOXIS ENGINES
+# ============================================================
+
 from app.engines.maigret_engine import search_username
 from app.engines.phone_engine import analyze_phone
 
 
-# ================================================================
-# APP
-# ================================================================
+# ============================================================
+# FASTAPI
+# ============================================================
 
 app = FastAPI(
     title="NOXIS API",
-    description=(
-        "Backend de NOXIS OSINT Intelligence Platform. "
-        "Integra Maigret, Phone Intelligence y PhoneInfoga."
-    ),
-    version="0.3.0",
+    description="API principal de NOXIS Intelligence Platform",
+    version="0.3.1",
 )
 
 
-# ================================================================
+# ============================================================
 # CORS
-# ================================================================
+# ============================================================
 
 app.add_middleware(
     CORSMiddleware,
@@ -55,22 +54,22 @@ app.add_middleware(
 )
 
 
-# ================================================================
+# ============================================================
 # REQUEST MODELS
-# ================================================================
+# ============================================================
 
 class UsernameSearchRequest(BaseModel):
     username: str = Field(
         ...,
         min_length=1,
-        description="Username o alias a investigar.",
+        description="Username o alias a investigar",
     )
 
-    limit: Optional[int] = Field(
+    limit: int = Field(
         default=20,
         ge=1,
         le=500,
-        description="Cantidad máxima de servicios a consultar.",
+        description="Cantidad máxima de sitios a consultar",
     )
 
 
@@ -78,44 +77,41 @@ class PhoneSearchRequest(BaseModel):
     phone_number: str = Field(
         ...,
         min_length=1,
-        description="Número de teléfono nacional o internacional.",
+        description="Número de teléfono",
     )
 
     default_region: str = Field(
         default="AR",
         min_length=2,
         max_length=2,
-        description="Código ISO de región por defecto.",
+        description="Código ISO de región",
     )
 
 
-# ================================================================
-# PHONE HELPERS
-# ================================================================
+# ============================================================
+# HELPERS PHONE OSINT
+# ============================================================
 
-def _normalize_phone_status(
+def normalize_phoneinfoga_status(
     phoneinfoga: Dict[str, Any],
 ) -> str:
 
     if not isinstance(phoneinfoga, dict):
         return "error"
 
-    status = phoneinfoga.get(
-        "status",
-        "error",
-    )
+    status = phoneinfoga.get("status")
 
-    if status in (
+    if status in {
         "completed",
         "partial",
         "error",
-    ):
+    }:
         return status
 
     return "unknown"
 
 
-def _extract_phone_public_footprints(
+def extract_public_footprints(
     phoneinfoga: Dict[str, Any],
 ) -> list:
 
@@ -133,11 +129,11 @@ def _extract_phone_public_footprints(
     return footprints
 
 
-def _extract_phone_footprint_groups(
+def extract_footprint_groups(
     phoneinfoga: Dict[str, Any],
 ) -> Dict[str, Any]:
 
-    empty_groups = {
+    default_groups = {
         "social_media": [],
         "reputation": [],
         "individuals": [],
@@ -146,7 +142,7 @@ def _extract_phone_footprint_groups(
     }
 
     if not isinstance(phoneinfoga, dict):
-        return empty_groups
+        return default_groups
 
     groups = phoneinfoga.get(
         "footprint_groups",
@@ -154,21 +150,18 @@ def _extract_phone_footprint_groups(
     )
 
     if not isinstance(groups, dict):
-        return empty_groups
+        return default_groups
 
-    normalized = dict(
-        empty_groups
-    )
+    normalized = dict(default_groups)
 
     for key, value in groups.items():
-
         if isinstance(value, list):
             normalized[key] = value
 
     return normalized
 
 
-def _extract_phone_summary(
+def extract_osint_summary(
     phoneinfoga: Dict[str, Any],
 ) -> Dict[str, Any]:
 
@@ -193,23 +186,17 @@ def _extract_phone_summary(
     if not isinstance(summary, dict):
         return default_summary
 
-    result = dict(
-        default_summary
-    )
+    normalized = dict(default_summary)
+    normalized.update(summary)
 
-    result.update(
-        summary
-    )
+    # Una consulta OSINT no representa
+    # una identidad o coincidencia confirmada.
+    normalized["confirmed_matches"] = 0
 
-    # Importante:
-    # una consulta generada NO equivale
-    # a una coincidencia confirmada.
-    result["confirmed_matches"] = 0
-
-    return result
+    return normalized
 
 
-def _build_phone_reputation(
+def build_reputation(
     footprint_groups: Dict[str, Any],
 ) -> Dict[str, Any]:
 
@@ -218,10 +205,7 @@ def _build_phone_reputation(
         [],
     )
 
-    if not isinstance(
-        reputation_items,
-        list,
-    ):
+    if not isinstance(reputation_items, list):
         reputation_items = []
 
     return {
@@ -231,17 +215,15 @@ def _build_phone_reputation(
             else "not_checked"
         ),
         "confirmed": False,
-        "queries_available": len(
-            reputation_items
-        ),
+        "queries_available": len(reputation_items),
         "matches_confirmed": 0,
         "items": reputation_items,
     }
 
 
-# ================================================================
+# ============================================================
 # ROOT
-# ================================================================
+# ============================================================
 
 @app.get("/")
 async def root() -> Dict[str, Any]:
@@ -249,24 +231,21 @@ async def root() -> Dict[str, Any]:
     return {
         "status": "ok",
         "platform": "NOXIS",
-        "version": "0.3.0",
-
-        "services": {
+        "api_version": "0.3.1",
+        "mode": "live",
+        "modules": {
             "username_intelligence": True,
             "phone_intelligence": True,
         },
-
         "engines": {
             "maigret": {
                 "enabled": True,
                 "mode": "live",
             },
-
             "phonenumbers": {
                 "enabled": True,
                 "mode": "live",
             },
-
             "phoneinfoga": {
                 "enabled": True,
                 "mode": "live",
@@ -275,9 +254,9 @@ async def root() -> Dict[str, Any]:
     }
 
 
-# ================================================================
+# ============================================================
 # HEALTH
-# ================================================================
+# ============================================================
 
 @app.get("/health")
 async def health() -> Dict[str, Any]:
@@ -285,34 +264,64 @@ async def health() -> Dict[str, Any]:
     return {
         "status": "ok",
         "platform": "NOXIS",
+        "api_version": "0.3.1",
     }
 
 
-# ================================================================
+# ============================================================
+# API INFO
+# ============================================================
+
+@app.get("/api/v1/info")
+async def api_info() -> Dict[str, Any]:
+
+    return {
+        "platform": "NOXIS",
+        "api_version": "0.3.1",
+        "mode": "live",
+        "modules": {
+            "username_intelligence": {
+                "enabled": True,
+                "engine": "Maigret",
+            },
+            "phone_intelligence": {
+                "enabled": True,
+                "engines": [
+                    "Google libphonenumber",
+                    "PhoneInfoga",
+                ],
+            },
+        },
+        "principles": {
+            "technical_match_is_identity": False,
+            "search_query_is_confirmation": False,
+            "confirmed_identity_required": True,
+        },
+    }
+
+
+# ============================================================
 # USERNAME INTELLIGENCE
-# ================================================================
+# ============================================================
 
 @app.post("/api/v1/search/username")
 async def username_search(
     request: UsernameSearchRequest,
 ) -> Dict[str, Any]:
 
-    username = request.username.strip()
+    username = request.username.strip().lstrip("@")
 
     if not username:
-
         raise HTTPException(
             status_code=400,
-            detail="Username requerido.",
+            detail="Username requerido",
         )
-
-    limit = request.limit or 20
 
     try:
 
         result = await search_username(
             username=username,
-            limit=limit,
+            limit=request.limit,
         )
 
         return result
@@ -322,14 +331,14 @@ async def username_search(
         raise HTTPException(
             status_code=400,
             detail=str(exc),
-        )
+        ) from exc
 
     except FileNotFoundError as exc:
 
         raise HTTPException(
             status_code=500,
             detail=str(exc),
-        )
+        ) from exc
 
     except Exception as exc:
 
@@ -339,12 +348,12 @@ async def username_search(
                 "Error ejecutando Username Intelligence: "
                 f"{exc}"
             ),
-        )
+        ) from exc
 
 
-# ================================================================
+# ============================================================
 # PHONE INTELLIGENCE
-# ================================================================
+# ============================================================
 
 @app.post("/api/v1/search/phone")
 async def phone_search(
@@ -359,10 +368,9 @@ async def phone_search(
     ).strip().upper()
 
     if not phone_number:
-
         raise HTTPException(
             status_code=400,
-            detail="Número de teléfono requerido.",
+            detail="Número de teléfono requerido",
         )
 
     try:
@@ -377,7 +385,7 @@ async def phone_search(
         raise HTTPException(
             status_code=400,
             detail=str(exc),
-        )
+        ) from exc
 
     except Exception as exc:
 
@@ -387,83 +395,63 @@ async def phone_search(
                 "Error ejecutando Phone Intelligence: "
                 f"{exc}"
             ),
-        )
+        ) from exc
 
-    if not isinstance(
-        result,
-        dict,
-    ):
-
+    if not isinstance(result, dict):
         raise HTTPException(
             status_code=500,
             detail=(
                 "Phone Intelligence devolvió "
-                "un formato inesperado."
+                "un formato inesperado"
             ),
         )
 
-    # ============================================================
+    # ========================================================
     # PHONEINFOGA
-    # ============================================================
+    # ========================================================
 
     phoneinfoga = result.get(
         "phoneinfoga",
         {},
     )
 
-    if not isinstance(
-        phoneinfoga,
-        dict,
-    ):
+    if not isinstance(phoneinfoga, dict):
         phoneinfoga = {}
 
-    phoneinfoga_status = (
-        _normalize_phone_status(
-            phoneinfoga
-        )
+    phoneinfoga_status = normalize_phoneinfoga_status(
+        phoneinfoga
     )
 
-    # ============================================================
-    # FOOTPRINTS CONSOLIDADOS
-    # ============================================================
+    # ========================================================
+    # FOOTPRINTS
+    # ========================================================
 
-    public_footprints = (
-        _extract_phone_public_footprints(
-            phoneinfoga
-        )
+    public_footprints = extract_public_footprints(
+        phoneinfoga
     )
 
-    footprint_groups = (
-        _extract_phone_footprint_groups(
-            phoneinfoga
-        )
+    footprint_groups = extract_footprint_groups(
+        phoneinfoga
     )
 
-    osint_summary = (
-        _extract_phone_summary(
-            phoneinfoga
-        )
+    osint_summary = extract_osint_summary(
+        phoneinfoga
     )
 
-    reputation = (
-        _build_phone_reputation(
-            footprint_groups
-        )
+    reputation = build_reputation(
+        footprint_groups
     )
 
-    # ============================================================
-    # ENGINE STATUS
-    # ============================================================
+    # ========================================================
+    # ENGINES
+    # ========================================================
 
     existing_engines = result.get(
         "engines",
         {},
     )
 
-    if not isinstance(
-        existing_engines,
-        dict,
-    ):
+    if not isinstance(existing_engines, dict):
         existing_engines = {}
 
     technical_engine = existing_engines.get(
@@ -483,145 +471,76 @@ async def phone_search(
         "status": phoneinfoga_status,
     }
 
-    # ============================================================
-    # EVIDENCE LAYER
-    # ============================================================
+    # ========================================================
+    # EVIDENCE
+    # ========================================================
 
     evidence = {
-
         "technical": {
             "status": "available",
             "confirmed": True,
             "description": (
-                "Información técnica obtenida "
-                "mediante libphonenumber."
+                "Información técnica del número "
+                "obtenida mediante libphonenumber."
             ),
         },
-
         "osint_queries": {
             "status": (
                 "available"
                 if public_footprints
                 else "none"
             ),
-            "count": len(
-                public_footprints
-            ),
+            "count": len(public_footprints),
             "confirmed": False,
             "description": (
                 "Consultas OSINT disponibles. "
-                "No equivalen a coincidencias confirmadas."
+                "No representan coincidencias confirmadas."
             ),
         },
-
         "confirmed_matches": {
             "status": "none",
             "count": 0,
             "confirmed": False,
             "description": (
-                "NOXIS no confirmó identidad "
-                "ni presencia del número "
-                "en plataformas externas."
+                "NOXIS no confirmó identidad ni presencia "
+                "del número en servicios externos."
             ),
         },
     }
 
-    # ============================================================
-    # RESPUESTA FINAL
-    # ============================================================
+    # ========================================================
+    # RESPONSE
+    # ========================================================
 
     return {
-
         "input": result.get(
             "input",
             phone_number,
         ),
-
         "normalized": result.get(
             "normalized",
             {},
         ),
-
         "validation": result.get(
             "validation",
             {},
         ),
-
         "country": result.get(
             "country",
             {},
         ),
-
         "technical": result.get(
             "technical",
             {},
         ),
-
         "engines": {
             "technical": technical_engine,
             "osint": osint_engine,
         },
-
         "phoneinfoga": phoneinfoga,
-
-        # --------------------------------------------------------
-        # RESULTADOS CONSOLIDADOS
-        # --------------------------------------------------------
-
-        "public_footprints": (
-            public_footprints
-        ),
-
-        "footprint_groups": (
-            footprint_groups
-        ),
-
-        "osint_summary": (
-            osint_summary
-        ),
-
-        "reputation": (
-            reputation
-        ),
-
-        "evidence": (
-            evidence
-        ),
-    }
-
-
-# ================================================================
-# API INFO
-# ================================================================
-
-@app.get("/api/v1/info")
-async def api_info() -> Dict[str, Any]:
-
-    return {
-
-        "platform": "NOXIS",
-
-        "api_version": "0.3.0",
-
-        "modules": {
-
-            "username_intelligence": {
-                "enabled": True,
-                "engine": "Maigret",
-            },
-
-            "phone_intelligence": {
-                "enabled": True,
-                "engines": [
-                    "Google libphonenumber",
-                    "PhoneInfoga",
-                ],
-            },
-        },
-
-        "principles": {
-            "technical_match_is_identity": False,
-            "search_query_is_confirmation": False,
-            "confirmed_identity_required": True,
-        },
+        "public_footprints": public_footprints,
+        "footprint_groups": footprint_groups,
+        "osint_summary": osint_summary,
+        "reputation": reputation,
+        "evidence": evidence,
     }
