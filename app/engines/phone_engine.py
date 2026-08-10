@@ -6,6 +6,15 @@ from phonenumbers import geocoder
 from phonenumbers import timezone
 from phonenumbers.phonenumberutil import NumberParseException
 
+from app.engines.phoneinfoga_engine import PhoneInfogaEngine
+
+
+# ============================================================
+# NOXIS PHONE INTELLIGENCE ENGINE
+# ============================================================
+
+phoneinfoga_engine = PhoneInfogaEngine()
+
 
 def get_number_type(parsed_number) -> str:
     number_type = phonenumbers.number_type(parsed_number)
@@ -25,7 +34,56 @@ def get_number_type(parsed_number) -> str:
         phonenumbers.PhoneNumberType.UNKNOWN: "Desconocido",
     }
 
-    return type_map.get(number_type, "Desconocido")
+    return type_map.get(
+        number_type,
+        "Desconocido"
+    )
+
+
+def _extract_public_footprints(
+    phoneinfoga_result: dict[str, Any]
+) -> list[Any]:
+    """
+    Extrae referencias públicas útiles de la respuesta
+    normalizada de PhoneInfoga.
+    """
+
+    footprints: list[Any] = []
+
+    if not isinstance(phoneinfoga_result, dict):
+        return footprints
+
+    results = phoneinfoga_result.get("results")
+
+    if not isinstance(results, dict):
+        return footprints
+
+    candidate_keys = (
+        "footprints",
+        "links",
+        "urls",
+        "results",
+    )
+
+    for key in candidate_keys:
+        value = results.get(key)
+
+        if isinstance(value, list):
+            footprints.extend(value)
+
+    unique = []
+    seen = set()
+
+    for item in footprints:
+        marker = str(item)
+
+        if marker in seen:
+            continue
+
+        seen.add(marker)
+        unique.append(item)
+
+    return unique
 
 
 async def analyze_phone(
@@ -36,7 +94,13 @@ async def analyze_phone(
     raw_number = phone_number.strip()
 
     if not raw_number:
-        raise ValueError("El número de teléfono no puede estar vacío.")
+        raise ValueError(
+            "El número de teléfono no puede estar vacío."
+        )
+
+    # ========================================================
+    # PARSEO
+    # ========================================================
 
     try:
         parsed = phonenumbers.parse(
@@ -49,8 +113,16 @@ async def analyze_phone(
             f"No se pudo interpretar el número: {exc}"
         )
 
+    # ========================================================
+    # VALIDACIÓN
+    # ========================================================
+
     possible = phonenumbers.is_possible_number(parsed)
     valid = phonenumbers.is_valid_number(parsed)
+
+    # ========================================================
+    # FORMATOS
+    # ========================================================
 
     e164 = phonenumbers.format_number(
         parsed,
@@ -67,7 +139,13 @@ async def analyze_phone(
         phonenumbers.PhoneNumberFormat.NATIONAL,
     )
 
-    region_code = phonenumbers.region_code_for_number(parsed)
+    # ========================================================
+    # DATOS TÉCNICOS
+    # ========================================================
+
+    region_code = phonenumbers.region_code_for_number(
+        parsed
+    )
 
     country_code = parsed.country_code
 
@@ -82,10 +160,46 @@ async def analyze_phone(
     )
 
     timezones = list(
-        timezone.time_zones_for_number(parsed)
+        timezone.time_zones_for_number(
+            parsed
+        )
     )
 
-    number_type = get_number_type(parsed)
+    number_type = get_number_type(
+        parsed
+    )
+
+    # ========================================================
+    # PHONEINFOGA
+    # ========================================================
+
+    phoneinfoga_result: dict[str, Any]
+
+    try:
+        phoneinfoga_result = phoneinfoga_engine.search(
+            phone_number=e164,
+            default_region=default_region,
+        )
+
+    except Exception as exc:
+        phoneinfoga_result = {
+            "status": "error",
+            "engine": {
+                "id": "phoneinfoga",
+                "name": "PhoneInfoga",
+                "mode": "live",
+            },
+            "error": "phoneinfoga_exception",
+            "message": str(exc),
+        }
+
+    public_footprints = _extract_public_footprints(
+        phoneinfoga_result
+    )
+
+    # ========================================================
+    # RESPUESTA FINAL
+    # ========================================================
 
     return {
         "input": raw_number,
@@ -107,19 +221,38 @@ async def analyze_phone(
         },
 
         "technical": {
-            "location_description": location or None,
-            "carrier": carrier_name or None,
+            "location_description": (
+                location or None
+            ),
+            "carrier": (
+                carrier_name or None
+            ),
             "line_type": number_type,
             "timezones": timezones,
         },
 
-        "engine": {
-            "id": "phonenumbers",
-            "name": "Google libphonenumber",
-            "mode": "live",
+        "engines": {
+            "technical": {
+                "id": "phonenumbers",
+                "name": "Google libphonenumber",
+                "mode": "live",
+                "status": "completed",
+            },
+
+            "osint": {
+                "id": "phoneinfoga",
+                "name": "PhoneInfoga",
+                "mode": "live",
+                "status": phoneinfoga_result.get(
+                    "status",
+                    "unknown",
+                ),
+            },
         },
 
-        "public_footprints": [],
+        "phoneinfoga": phoneinfoga_result,
+
+        "public_footprints": public_footprints,
 
         "reputation": {
             "status": "not_checked",
