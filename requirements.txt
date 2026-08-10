@@ -4,3 +4,4 @@ maigret
 pydantic
 httpx
 phonenumbers
+requests
