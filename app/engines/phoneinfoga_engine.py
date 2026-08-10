@@ -2,16 +2,22 @@
 NOXIS - PhoneInfoga Engine
 ==========================
 
-Motor de integración entre NOXIS API y PhoneInfoga.
+Motor de integración entre NOXIS API y el servicio PhoneInfoga
+desplegado en Render.
 
-Objetivos:
+Servicio:
+https://noxis-phoneinfoga.onrender.com
+
+Funciones:
 - Validar números mediante PhoneInfoga
 - Ejecutar scanners disponibles
-- Procesar Google Search
-- Convertir dorks en footprints para NOXIS
-- Tolerar fallos parciales
-- Recuperarse automáticamente de cold starts de Render
-- No confundir búsquedas sugeridas con coincidencias confirmadas
+- Procesar resultados de Google Search
+- Convertir dorks de PhoneInfoga en footprints utilizables por NOXIS
+- Mantener tolerancia a errores parciales
+- Recuperarse de errores temporales 502/503/504 de Render
+- Detectar y manejar cold starts del servicio
+- No interrumpir NOXIS si un scanner falla
+- Mantener separadas consultas OSINT y coincidencias confirmadas
 """
 
 from __future__ import annotations
@@ -25,6 +31,12 @@ import requests
 
 
 class PhoneInfogaEngine:
+    """
+    Cliente PhoneInfoga utilizado por NOXIS.
+
+    Está diseñado para aceptar fallos parciales.
+    Si un scanner falla, los demás resultados continúan disponibles.
+    """
 
     ENGINE_ID = "phoneinfoga"
     ENGINE_NAME = "PhoneInfoga"
@@ -79,6 +91,10 @@ class PhoneInfogaEngine:
             "priority": 5,
         },
     }
+
+    # ============================================================
+    # INICIALIZACIÓN
+    # ============================================================
 
     def __init__(
         self,
@@ -141,24 +157,45 @@ class PhoneInfogaEngine:
         self,
         phone_number: str,
     ) -> str:
+        """
+        Convierte el número al formato utilizado por las rutas
+        internas de PhoneInfoga.
+
+        Ejemplo:
+
+        +542932520063
+
+        se convierte en:
+
+        542932520063
+        """
 
         if phone_number is None:
             return ""
 
         raw = str(phone_number).strip()
 
-        return "".join(
-            char
-            for char in raw
-            if char.isdigit()
+        cleaned = "".join(
+            character
+            for character in raw
+            if character.isdigit()
         )
+
+        return cleaned
 
     def _safe_response_data(
         self,
         response: requests.Response,
     ) -> Dict[str, Any]:
+        """
+        Convierte una respuesta HTTP en una estructura segura.
+
+        Evita que las páginas HTML completas de error de Render
+        terminen dentro de las respuestas JSON de NOXIS.
+        """
 
         try:
+
             data = response.json()
 
             if isinstance(data, dict):
@@ -172,17 +209,18 @@ class PhoneInfogaEngine:
 
             text = response.text or ""
 
-            # Evitamos devolver páginas HTML gigantes
-            # de Render dentro de la respuesta de NOXIS.
             if len(text) > 2000:
-                text = text[:2000] + "...[truncated]"
+                text = (
+                    text[:2000]
+                    + "...[truncated]"
+                )
 
             return {
                 "raw": text
             }
 
     # ============================================================
-    # REQUEST CON RETRIES
+    # REQUEST HTTP
     # ============================================================
 
     def _request(
@@ -192,15 +230,17 @@ class PhoneInfogaEngine:
         retries: Optional[int] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-
         """
         Ejecuta una petición segura contra PhoneInfoga.
 
         Implementa:
+
         - retries automáticos
-        - tolerancia a 502/503/504
+        - recuperación de 502
+        - recuperación de 503
+        - recuperación de 504
         - backoff progresivo
-        - protección ante timeout
+        - tolerancia a timeouts
         - nunca propaga excepciones hacia NOXIS
         """
 
@@ -211,6 +251,9 @@ class PhoneInfogaEngine:
             if retries is None
             else retries
         )
+
+        if max_retries < 1:
+            max_retries = 1
 
         attempts: List[Dict[str, Any]] = []
 
@@ -232,14 +275,16 @@ class PhoneInfogaEngine:
                     response
                 )
 
-                attempt_info = {
-                    "attempt": attempt,
-                    "status_code": response.status_code,
-                }
-
                 attempts.append(
-                    attempt_info
+                    {
+                        "attempt": attempt,
+                        "status_code": response.status_code,
+                    }
                 )
+
+                # ------------------------------------------------
+                # RESPUESTA CORRECTA
+                # ------------------------------------------------
 
                 if response.ok:
 
@@ -250,6 +295,10 @@ class PhoneInfogaEngine:
                         "attempts_count": attempt,
                         "data": data,
                     }
+
+                # ------------------------------------------------
+                # ERROR NO REINTENTABLE
+                # ------------------------------------------------
 
                 if (
                     response.status_code
@@ -265,7 +314,10 @@ class PhoneInfogaEngine:
                         "error": "http_error",
                     }
 
-                # Error temporal: esperamos y reintentamos.
+                # ------------------------------------------------
+                # ERROR TEMPORAL
+                # ------------------------------------------------
+
                 if attempt < max_retries:
 
                     delay = (
@@ -286,6 +338,10 @@ class PhoneInfogaEngine:
                     "error": "service_unavailable",
                     "attempts": attempts,
                 }
+
+            # ====================================================
+            # TIMEOUT
+            # ====================================================
 
             except requests.Timeout as exc:
 
@@ -317,6 +373,10 @@ class PhoneInfogaEngine:
                     "attempts": attempts,
                 }
 
+            # ====================================================
+            # REQUEST ERROR
+            # ====================================================
+
             except requests.RequestException as exc:
 
                 attempts.append(
@@ -347,6 +407,10 @@ class PhoneInfogaEngine:
                     "attempts": attempts,
                 }
 
+            # ====================================================
+            # ERROR INESPERADO
+            # ====================================================
+
             except Exception as exc:
 
                 return {
@@ -368,25 +432,60 @@ class PhoneInfogaEngine:
         }
 
     # ============================================================
-    # WAKE UP / HEALTH
+    # WAKE UP
     # ============================================================
 
     def wake_service(
         self,
     ) -> Dict[str, Any]:
-
         """
-        Despierta PhoneInfoga antes de ejecutar el análisis.
+        Comprueba que el contenedor PhoneInfoga esté despierto.
 
-        /api/version es liviano y permite verificar
-        que el servidor Go ya está atendiendo.
+        IMPORTANTE:
+
+        No dependemos de /api/version porque esa ruta puede
+        no existir en determinadas versiones de PhoneInfoga.
+
+        Consultamos la raíz "/".
+
+        Si el servidor devuelve cualquier respuesta HTTP
+        inferior a 500 significa que PhoneInfoga está atendiendo.
+
+        404 también significa que el servidor está vivo:
+        simplemente la ruta solicitada no existe.
+
+        Solo 5xx, timeout o error de red significan que
+        PhoneInfoga sigue indisponible.
         """
 
-        return self._request(
+        result = self._request(
             "GET",
-            "/api/version",
+            "/",
             retries=self.retries,
         )
+
+        status_code = result.get(
+            "status_code"
+        )
+
+        if (
+            status_code is not None
+            and status_code < 500
+        ):
+
+            result["success"] = True
+
+            result["service_alive"] = True
+
+        else:
+
+            result["service_alive"] = False
+
+        return result
+
+    # ============================================================
+    # HEALTH
+    # ============================================================
 
     def health(
         self,
@@ -519,13 +618,17 @@ class PhoneInfogaEngine:
         )
 
     # ============================================================
-    # GOOGLE RESULT
+    # GOOGLE SEARCH
     # ============================================================
 
     def _extract_google_result(
         self,
         google_response: Dict[str, Any],
     ) -> Dict[str, Any]:
+        """
+        Extrae el objeto result de Google Search devuelto
+        por PhoneInfoga.
+        """
 
         if not isinstance(
             google_response,
@@ -600,6 +703,7 @@ class PhoneInfogaEngine:
             "ext:pdf" in text
             or "ext:doc" in text
         ):
+
             return "Documentos públicos"
 
         return "Google"
@@ -653,29 +757,47 @@ class PhoneInfogaEngine:
 
         return {
             "engine": self.ENGINE_ID,
+
             "source": source,
+
             "category": (
                 category_config["type"]
             ),
+
             "category_label": (
                 category_config["label"]
             ),
+
             "priority": (
                 category_config["priority"]
             ),
+
             "phone_number": number,
+
             "query": dork,
+
             "url": url,
 
-            # PhoneInfoga genera consultas/dorks.
-            # No constituyen por sí mismos
-            # una coincidencia confirmada.
+            # ----------------------------------------------------
+            # IMPORTANTE
+            # ----------------------------------------------------
+            # PhoneInfoga genera consultas OSINT / dorks.
+            #
+            # Una consulta disponible NO significa que NOXIS
+            # haya confirmado que el número pertenece a una
+            # cuenta, persona o plataforma determinada.
+            # ----------------------------------------------------
+
             "confirmed": False,
 
             "result_type": "search_query",
 
             "status": "search_available",
         }
+
+    # ============================================================
+    # EXTRAER FOOTPRINTS
+    # ============================================================
 
     def _extract_public_footprints(
         self,
@@ -705,9 +827,11 @@ class PhoneInfogaEngine:
 
             for item in items:
 
-                footprint = self._build_footprint(
-                    category,
-                    item,
+                footprint = (
+                    self._build_footprint(
+                        category,
+                        item,
+                    )
                 )
 
                 if footprint:
@@ -732,7 +856,7 @@ class PhoneInfogaEngine:
         return footprints
 
     # ============================================================
-    # AGRUPACIÓN
+    # AGRUPAR FOOTPRINTS
     # ============================================================
 
     def _group_footprints(
@@ -768,7 +892,7 @@ class PhoneInfogaEngine:
         return groups
 
     # ============================================================
-    # RESUMEN
+    # SUMMARY
     # ============================================================
 
     def _build_summary(
@@ -780,9 +904,10 @@ class PhoneInfogaEngine:
         available: List[str] = []
         failed: List[str] = []
 
-        for scanner, result in (
-            scanner_results.items()
-        ):
+        for (
+            scanner,
+            result,
+        ) in scanner_results.items():
 
             if result.get(
                 "success"
@@ -798,8 +923,15 @@ class PhoneInfogaEngine:
                     scanner
                 )
 
-        categories: Dict[str, int] = {}
-        sources: Dict[str, int] = {}
+        categories: Dict[
+            str,
+            int,
+        ] = {}
+
+        sources: Dict[
+            str,
+            int,
+        ] = {}
 
         for footprint in footprints:
 
@@ -833,17 +965,26 @@ class PhoneInfogaEngine:
             "scanners_available": len(
                 available
             ),
+
             "scanners_failed": len(
                 failed
             ),
+
             "footprints_found": len(
                 footprints
             ),
+
             "search_queries_generated": len(
                 footprints
             ),
+
+            # NOXIS mantiene separado
+            # query OSINT de evidencia confirmada.
+
             "confirmed_matches": 0,
+
             "categories": categories,
+
             "sources": sources,
         }
 
@@ -856,6 +997,13 @@ class PhoneInfogaEngine:
         phone_number: str,
         default_region: str = "AR",
     ) -> Dict[str, Any]:
+        """
+        Método principal utilizado por phone_engine.py.
+
+        IMPORTANTE:
+
+        Debe conservar el nombre `search`.
+        """
 
         number = self._prepare_number(
             phone_number
@@ -865,29 +1013,31 @@ class PhoneInfogaEngine:
 
             return {
                 "status": "error",
+
                 "phone_number": phone_number,
+
                 "engine": {
                     "id": self.ENGINE_ID,
                     "name": self.ENGINE_NAME,
                     "mode": "live",
                 },
+
                 "error": "invalid_phone_number",
+
                 "message": (
                     "El número de teléfono "
                     "está vacío o no es válido."
                 ),
+
                 "public_footprints": [],
             }
 
         # ========================================================
-        # 1. WAKE UP PHONEINFOGA
+        # 1. DESPERTAR / COMPROBAR PHONEINFOGA
         # ========================================================
 
         wakeup = self.wake_service()
 
-        # Si PhoneInfoga sigue caído después
-        # de los reintentos, evitamos hacer
-        # otras cuatro llamadas inútiles.
         if not wakeup.get(
             "success"
         ):
@@ -922,9 +1072,7 @@ class PhoneInfogaEngine:
 
                 "validation": {
                     "success": False,
-                    "error": (
-                        "service_unavailable"
-                    ),
+                    "error": "service_unavailable",
                 },
 
                 "scanners": {
@@ -958,7 +1106,7 @@ class PhoneInfogaEngine:
             }
 
         # ========================================================
-        # 2. VALIDACIÓN
+        # 2. VALIDACIÓN PHONEINFOGA
         # ========================================================
 
         validation = self.validate(
@@ -1058,7 +1206,7 @@ class PhoneInfogaEngine:
         )
 
         # ========================================================
-        # 7. STATUS
+        # 7. STATUS GENERAL
         # ========================================================
 
         if not available:
@@ -1074,7 +1222,7 @@ class PhoneInfogaEngine:
             status = "completed"
 
         # ========================================================
-        # 8. RESPONSE
+        # 8. RESPUESTA FINAL
         # ========================================================
 
         return {
@@ -1098,11 +1246,14 @@ class PhoneInfogaEngine:
 
             "wakeup": {
                 "success": True,
-                "attempts_count": (
-                    wakeup.get(
-                        "attempts_count",
-                        1,
-                    )
+
+                "status_code": wakeup.get(
+                    "status_code"
+                ),
+
+                "attempts_count": wakeup.get(
+                    "attempts_count",
+                    1,
                 ),
             },
 
@@ -1127,7 +1278,7 @@ class PhoneInfogaEngine:
         }
 
     # ============================================================
-    # ALIAS
+    # ALIAS DE COMPATIBILIDAD
     # ============================================================
 
     def scan(
@@ -1135,6 +1286,10 @@ class PhoneInfogaEngine:
         phone_number: str,
         default_region: str = "AR",
     ) -> Dict[str, Any]:
+        """
+        Alias conservado para compatibilidad con versiones
+        anteriores de NOXIS.
+        """
 
         return self.search(
             phone_number=phone_number,
@@ -1150,7 +1305,7 @@ phoneinfoga_engine = PhoneInfogaEngine()
 
 
 # ================================================================
-# COMPATIBILIDAD
+# FUNCIONES DE COMPATIBILIDAD
 # ================================================================
 
 def search_phoneinfoga(
