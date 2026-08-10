@@ -1,285 +1,317 @@
-import os
+"""
+NOXIS - PhoneInfoga Engine
+Conector entre NOXIS API y el servicio PhoneInfoga desplegado en Render.
+"""
+
 from typing import Any, Dict, Optional
 from urllib.parse import quote
 
 import requests
 
 
-DEFAULT_PHONEINFOGA_URL = "https://noxis-phoneinfoga.onrender.com"
-
-PHONEINFOGA_URL = os.getenv(
-    "PHONEINFOGA_URL",
-    DEFAULT_PHONEINFOGA_URL,
-).strip().rstrip("/")
+PHONEINFOGA_BASE_URL = "https://noxis-phoneinfoga.onrender.com"
 
 
 class PhoneInfogaEngine:
     """
-    Conector entre NOXIS API y el microservicio PhoneInfoga.
-    """
+    Motor de integración de PhoneInfoga para NOXIS.
 
-    ENGINE_ID = "phoneinfoga"
-    ENGINE_NAME = "PhoneInfoga"
+    PhoneInfoga espera el número internacional SIN el signo "+" en
+    las rutas /api/numbers/{number}/...
+    """
 
     def __init__(
         self,
-        base_url: Optional[str] = None,
+        base_url: str = PHONEINFOGA_BASE_URL,
         timeout: int = 60,
     ):
-        self.base_url = (
-            base_url
-            or PHONEINFOGA_URL
-            or DEFAULT_PHONEINFOGA_URL
-        ).strip().rstrip("/")
-
+        self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 
-    def engine_info(self) -> Dict[str, Any]:
-        return {
-            "id": self.ENGINE_ID,
-            "name": self.ENGINE_NAME,
-            "mode": "live",
-            "service_url": self.base_url,
-        }
-
-    def health(self) -> Dict[str, Any]:
+    def _prepare_number(self, phone_number: str) -> str:
         """
-        PhoneInfoga expone /api/ como health endpoint.
+        Prepara el número para las rutas de PhoneInfoga.
+
+        Ejemplo:
+            +542932520063 -> 542932520063
         """
 
-        try:
-            response = requests.get(
-                f"{self.base_url}/api/",
-                timeout=15,
-            )
+        if not phone_number:
+            return ""
 
-            return {
-                "available": response.status_code < 500,
-                "status_code": response.status_code,
-                "engine": self.engine_info(),
-            }
+        number = str(phone_number).strip()
 
-        except requests.RequestException as exc:
-            return {
-                "available": False,
-                "engine": self.engine_info(),
-                "error": str(exc),
-            }
+        # PhoneInfoga acepta el número internacional sin "+"
+        number = number.lstrip("+")
 
-    def _safe_response(
+        # Eliminamos caracteres habituales de presentación.
+        number = (
+            number.replace(" ", "")
+            .replace("-", "")
+            .replace("(", "")
+            .replace(")", "")
+        )
+
+        return number
+
+    def _request(
         self,
-        response: requests.Response,
-    ) -> Any:
-
-        try:
-            return response.json()
-
-        except ValueError:
-            return {
-                "raw": response.text,
-            }
-
-    def _call_endpoint(
-        self,
+        method: str,
         endpoint: str,
+        **kwargs,
     ) -> Dict[str, Any]:
+        """
+        Ejecuta una petición contra PhoneInfoga.
+        """
 
         url = f"{self.base_url}{endpoint}"
 
         try:
-            response = requests.get(
-                url,
-                headers={
-                    "Accept": "application/json",
-                    "User-Agent": "NOXIS-PhoneIntelligence",
-                },
+            response = requests.request(
+                method=method,
+                url=url,
                 timeout=self.timeout,
+                **kwargs,
             )
 
-            data = self._safe_response(response)
+            response.raise_for_status()
 
-            return {
-                "success": response.status_code < 400,
-                "status_code": response.status_code,
-                "endpoint": endpoint,
-                "data": data,
-            }
+            try:
+                return {
+                    "success": True,
+                    "status_code": response.status_code,
+                    "data": response.json(),
+                }
+
+            except ValueError:
+                return {
+                    "success": True,
+                    "status_code": response.status_code,
+                    "data": {
+                        "raw": response.text
+                    },
+                }
 
         except requests.Timeout:
             return {
                 "success": False,
-                "endpoint": endpoint,
                 "error": "timeout",
+                "message": "PhoneInfoga excedió el tiempo máximo de respuesta.",
+                "url": url,
+            }
+
+        except requests.ConnectionError as exc:
+            return {
+                "success": False,
+                "error": "connection_error",
+                "message": "No fue posible conectar con PhoneInfoga.",
+                "detail": str(exc),
+                "url": url,
+            }
+
+        except requests.HTTPError as exc:
+            status_code: Optional[int] = None
+            response_text: Optional[str] = None
+
+            if exc.response is not None:
+                status_code = exc.response.status_code
+                response_text = exc.response.text
+
+            return {
+                "success": False,
+                "error": "http_error",
+                "status_code": status_code,
+                "message": "PhoneInfoga respondió con un error HTTP.",
+                "detail": response_text or str(exc),
+                "url": url,
             }
 
         except requests.RequestException as exc:
             return {
                 "success": False,
-                "endpoint": endpoint,
                 "error": "request_error",
+                "message": "Error realizando la solicitud a PhoneInfoga.",
                 "detail": str(exc),
+                "url": url,
             }
 
-    def search(
+        except Exception as exc:
+            return {
+                "success": False,
+                "error": "unexpected_error",
+                "message": "Se produjo un error inesperado en PhoneInfoga Engine.",
+                "detail": str(exc),
+                "url": url,
+            }
+
+    def health(self) -> Dict[str, Any]:
+        """
+        Comprueba si el servicio PhoneInfoga está disponible.
+        """
+
+        result = self._request(
+            "GET",
+            "/api/",
+        )
+
+        return {
+            "engine": {
+                "id": "phoneinfoga",
+                "name": "PhoneInfoga",
+                "mode": "live",
+            },
+            "service": {
+                "url": self.base_url,
+            },
+            "result": result,
+        }
+
+    def validate(
+        self,
+        phone_number: str,
+    ) -> Dict[str, Any]:
+        """
+        Valida el número utilizando PhoneInfoga.
+        """
+
+        clean_number = self._prepare_number(phone_number)
+
+        if not clean_number:
+            return {
+                "success": False,
+                "error": "empty_phone_number",
+                "message": "No se proporcionó un número de teléfono.",
+            }
+
+        encoded_number = quote(
+            clean_number,
+            safe="",
+        )
+
+        return self._request(
+            "GET",
+            f"/api/numbers/{encoded_number}/validate",
+        )
+
+    def scan_local(
+        self,
+        phone_number: str,
+    ) -> Dict[str, Any]:
+        """
+        Ejecuta el scanner local de PhoneInfoga.
+        """
+
+        clean_number = self._prepare_number(phone_number)
+
+        if not clean_number:
+            return {
+                "success": False,
+                "error": "empty_phone_number",
+                "message": "No se proporcionó un número de teléfono.",
+            }
+
+        encoded_number = quote(
+            clean_number,
+            safe="",
+        )
+
+        return self._request(
+            "GET",
+            f"/api/numbers/{encoded_number}/scan/local",
+        )
+
+    def scan(
         self,
         phone_number: str,
         default_region: str = "AR",
     ) -> Dict[str, Any]:
+        """
+        Ejecuta el análisis principal de PhoneInfoga.
 
-        phone_number = (phone_number or "").strip()
+        NOXIS puede enviar:
+            +542932520063
 
-        if not phone_number:
+        PhoneInfoga recibirá:
+            542932520063
+        """
+
+        original_number = phone_number
+        clean_number = self._prepare_number(phone_number)
+
+        if not clean_number:
             return {
                 "status": "error",
-                "engine": self.engine_info(),
-                "error": "phone_number_required",
-                "message": "Debe proporcionar un número de teléfono.",
+                "phone_number": original_number,
+                "default_region": default_region,
+                "engine": {
+                    "id": "phoneinfoga",
+                    "name": "PhoneInfoga",
+                    "mode": "live",
+                },
+                "error": "empty_phone_number",
+                "message": "No se proporcionó un número de teléfono.",
             }
 
-        encoded_number = quote(
-            phone_number,
-            safe="",
-        )
+        validation = self.validate(original_number)
 
-        endpoints = {
-            "validation": (
-                f"/api/numbers/{encoded_number}/validate"
-            ),
-            "local": (
-                f"/api/numbers/{encoded_number}/scan/local"
-            ),
-            "google_search": (
-                f"/api/numbers/{encoded_number}/scan/googlesearch"
-            ),
-            "numverify": (
-                f"/api/numbers/{encoded_number}/scan/numverify"
-            ),
-            "ovh": (
-                f"/api/numbers/{encoded_number}/scan/ovh"
-            ),
-        }
+        # Si PhoneInfoga rechaza el número, no continuamos.
+        if not validation.get("success"):
+            return {
+                "status": "error",
+                "phone_number": original_number,
+                "phoneinfoga_number": clean_number,
+                "default_region": default_region,
+                "engine": {
+                    "id": "phoneinfoga",
+                    "name": "PhoneInfoga",
+                    "mode": "live",
+                },
+                "service": {
+                    "url": self.base_url,
+                },
+                "validation": validation,
+                "error": "phoneinfoga_validation_failed",
+                "message": "PhoneInfoga no pudo validar el número.",
+            }
 
-        scanner_results: Dict[str, Any] = {}
-        available_scanners = []
-        failed_scanners = []
+        local_result = self.scan_local(original_number)
 
-        for scanner_name, endpoint in endpoints.items():
-
-            result = self._call_endpoint(
-                endpoint
-            )
-
-            scanner_results[scanner_name] = result
-
-            if result.get("success"):
-                available_scanners.append(
-                    scanner_name
-                )
-            else:
-                failed_scanners.append(
-                    scanner_name
-                )
-
-        footprints = []
-
-        google_result = scanner_results.get(
-            "google_search",
-            {}
-        )
-
-        google_data = google_result.get(
-            "data"
-        )
-
-        if isinstance(google_data, dict):
-
-            for key in (
-                "results",
-                "links",
-                "urls",
-                "footprints",
-            ):
-                value = google_data.get(key)
-
-                if isinstance(value, list):
-                    footprints.extend(value)
-
-        elif isinstance(
-            google_data,
-            list
-        ):
-            footprints.extend(
-                google_data
-            )
-
-        unique_footprints = []
-        seen = set()
-
-        for item in footprints:
-
-            marker = str(item)
-
-            if marker in seen:
-                continue
-
-            seen.add(marker)
-            unique_footprints.append(item)
+        completed = local_result.get("success", False)
 
         return {
-            "status": "completed",
-
-            "phone_number": phone_number,
-
+            "status": "completed" if completed else "partial",
+            "phone_number": original_number,
+            "phoneinfoga_number": clean_number,
             "default_region": default_region,
-
             "engine": {
-                "id": self.ENGINE_ID,
-                "name": self.ENGINE_NAME,
+                "id": "phoneinfoga",
+                "name": "PhoneInfoga",
                 "mode": "live",
             },
-
             "service": {
                 "url": self.base_url,
             },
-
-            "scanners": {
-                "available": available_scanners,
-                "failed": failed_scanners,
-            },
-
-            "scanner_results": scanner_results,
-
-            "public_footprints": unique_footprints,
-
-            "summary": {
-                "scanners_available": len(
-                    available_scanners
-                ),
-                "scanners_failed": len(
-                    failed_scanners
-                ),
-                "footprints_found": len(
-                    unique_footprints
-                ),
-            },
+            "validation": validation,
+            "local": local_result,
         }
+
+
+# Instancia reutilizable por NOXIS API
+phoneinfoga_engine = PhoneInfogaEngine()
 
 
 def search_phoneinfoga(
     phone_number: str,
     default_region: str = "AR",
 ) -> Dict[str, Any]:
+    """
+    Función pública para utilizar PhoneInfoga desde NOXIS.
 
-    engine = PhoneInfogaEngine()
+    Ejemplo:
+        search_phoneinfoga("+542932520063", "AR")
+    """
 
-    return engine.search(
+    return phoneinfoga_engine.scan(
         phone_number=phone_number,
         default_region=default_region,
     )
-
-
-def phoneinfoga_health() -> Dict[str, Any]:
-
-    engine = PhoneInfogaEngine()
-
-    return engine.health()
