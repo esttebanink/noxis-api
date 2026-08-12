@@ -787,6 +787,36 @@ async def email_search(
             {},
         ),
 
+        # ====================================================
+        # DIAGNÓSTICO TEMPORAL
+        # ====================================================
+        #
+        # Permite ver el error interno real de HoleheEngine
+        # durante esta fase de integración.
+        #
+        # No altera el funcionamiento de la búsqueda.
+        # Puede retirarse más adelante cuando el flujo quede
+        # completamente validado.
+        # ====================================================
+
+        "diagnostics": {
+            "error": result.get(
+                "error"
+            ),
+
+            "message": result.get(
+                "message"
+            ),
+
+            "response": result.get(
+                "response"
+            ),
+
+            "wakeup": result.get(
+                "wakeup"
+            ),
+        },
+
         "duration_seconds": result.get(
             "duration_seconds"
         ),
