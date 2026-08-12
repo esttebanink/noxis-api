@@ -39,17 +39,14 @@ class HoleheEngine:
     # ========================================================
     # RENDER FREE / COLD START
     # ========================================================
-    #
-    # Render Free puede tardar bastante en reactivar
-    # una instancia suspendida.
-    #
-    # Aumentamos únicamente la tolerancia de conexión.
-    # No modificamos el contrato de Email Intelligence.
-    # ========================================================
 
     DEFAULT_TIMEOUT = 45
     DEFAULT_RETRIES = 6
     DEFAULT_RETRY_DELAY = 5
+
+    # Después de agotar los reintentos normales,
+    # esperamos una vez más y realizamos una comprobación final.
+    FINAL_WAKE_DELAY = 12
 
     RETRYABLE_STATUS_CODES = {
         408,
@@ -104,6 +101,18 @@ class HoleheEngine:
         except (TypeError, ValueError):
             self.retry_delay = (
                 self.DEFAULT_RETRY_DELAY
+            )
+
+        try:
+            self.final_wake_delay = float(
+                os.getenv(
+                    "HOLEHE_FINAL_WAKE_DELAY",
+                    str(self.FINAL_WAKE_DELAY),
+                )
+            )
+        except (TypeError, ValueError):
+            self.final_wake_delay = (
+                self.FINAL_WAKE_DELAY
             )
 
         self.session = requests.Session()
@@ -225,6 +234,7 @@ class HoleheEngine:
                         "url": url,
                         "attempts_count": attempt,
                         "data": data,
+                        "attempts": attempts,
                     }
 
                 if (
@@ -351,9 +361,9 @@ class HoleheEngine:
         self,
     ) -> Dict[str, Any]:
 
-        # Los reintentos largos se utilizan aquí,
-        # específicamente para tolerar el cold start
-        # de Render Free.
+        # ----------------------------------------------------
+        # 1. Intentos normales con backoff progresivo
+        # ----------------------------------------------------
 
         result = self._request(
             "GET",
@@ -364,10 +374,109 @@ class HoleheEngine:
         if result.get("success"):
 
             result["service_alive"] = True
+            result["final_probe_used"] = False
 
-        else:
+            return result
 
-            result["service_alive"] = False
+        # ----------------------------------------------------
+        # 2. Última espera para cubrir el caso en que Render
+        #    termina de arrancar justo después del último 502.
+        # ----------------------------------------------------
+
+        time.sleep(
+            self.final_wake_delay
+        )
+
+        # ----------------------------------------------------
+        # 3. Comprobación final, una sola vez
+        # ----------------------------------------------------
+
+        final_probe = self._request(
+            "GET",
+            "/health",
+            retries=1,
+        )
+
+        if final_probe.get("success"):
+
+            return {
+                "success": True,
+
+                "status_code": final_probe.get(
+                    "status_code"
+                ),
+
+                "url": final_probe.get(
+                    "url"
+                ),
+
+                "attempts_count": (
+                    int(
+                        result.get(
+                            "attempts_count",
+                            self.retries,
+                        )
+                        or self.retries
+                    )
+                    + 1
+                ),
+
+                "data": final_probe.get(
+                    "data",
+                    {},
+                ),
+
+                "attempts": (
+                    result.get(
+                        "attempts",
+                        [],
+                    )
+                    + [
+                        {
+                            "attempt": "final_probe",
+                            "status_code": (
+                                final_probe.get(
+                                    "status_code"
+                                )
+                            ),
+                        }
+                    ]
+                ),
+
+                "service_alive": True,
+
+                "final_probe_used": True,
+
+                "previous_error": result.get(
+                    "error"
+                ),
+            }
+
+        # ----------------------------------------------------
+        # 4. Fallo definitivo
+        # ----------------------------------------------------
+
+        result["service_alive"] = False
+        result["final_probe_used"] = True
+
+        result["final_probe"] = {
+            "success": final_probe.get(
+                "success",
+                False,
+            ),
+
+            "status_code": final_probe.get(
+                "status_code"
+            ),
+
+            "error": final_probe.get(
+                "error"
+            ),
+
+            "detail": final_probe.get(
+                "detail"
+            ),
+        }
 
         return result
 
@@ -471,8 +580,6 @@ class HoleheEngine:
                         "others"
                     ),
 
-                    # Holehe detecta presencia
-                    # técnica, no identidad.
                     "technical_match": True,
 
                     "identity_confirmed": False,
@@ -550,12 +657,14 @@ class HoleheEngine:
 
                 "message": (
                     "Holehe no respondió "
-                    "después de varios intentos."
+                    "después de varios intentos "
+                    "y una comprobación final."
                 ),
 
                 "wakeup": wakeup,
 
                 "summary": {
+                    "modules_loaded": 0,
                     "sites_checked": 0,
                     "registered": 0,
                     "not_registered": 0,
@@ -566,9 +675,11 @@ class HoleheEngine:
 
                 "registered_accounts": [],
 
+                "results": [],
+
                 "evidence": {
                     "account_presence": {
-                        "status": "none",
+                        "status": "unavailable",
                         "count": 0,
                         "technical_match": False,
                         "identity_confirmed": False,
@@ -580,12 +691,8 @@ class HoleheEngine:
         # SEARCH
         # ====================================================
         #
-        # Una vez que /health responde correctamente,
-        # ejecutamos la búsqueda real.
-        #
-        # A propósito usamos un único intento para el
-        # POST costoso. No queremos ejecutar seis análisis
-        # completos de 121 módulos por un mismo email.
+        # El servicio ya respondió /health.
+        # La búsqueda completa se ejecuta UNA sola vez.
         # ====================================================
 
         response = self._request(
@@ -619,24 +726,17 @@ class HoleheEngine:
                 "error": "holehe_search_failed",
 
                 "message": (
-                    "No fue posible completar "
+                    "Holehe respondió al health check, "
+                    "pero no fue posible completar "
                     "la búsqueda de email."
                 ),
 
                 "response": response,
 
-                "wakeup": {
-                    "success": True,
-                    "status_code": wakeup.get(
-                        "status_code"
-                    ),
-                    "attempts_count": wakeup.get(
-                        "attempts_count",
-                        1,
-                    ),
-                },
+                "wakeup": wakeup,
 
                 "summary": {
+                    "modules_loaded": 0,
                     "sites_checked": 0,
                     "registered": 0,
                     "not_registered": 0,
@@ -648,6 +748,15 @@ class HoleheEngine:
                 "registered_accounts": [],
 
                 "results": [],
+
+                "evidence": {
+                    "account_presence": {
+                        "status": "unavailable",
+                        "count": 0,
+                        "technical_match": False,
+                        "identity_confirmed": False,
+                    }
+                },
             }
 
         data = response.get(
@@ -659,7 +768,6 @@ class HoleheEngine:
             data,
             dict,
         ):
-
             data = {}
 
         # ====================================================
@@ -686,7 +794,6 @@ class HoleheEngine:
             summary,
             dict,
         ):
-
             summary = {}
 
         remote_status = data.get(
@@ -723,8 +830,6 @@ class HoleheEngine:
                 registered_accounts
             ),
 
-            # Conservamos la respuesta completa
-            # para futuras correlaciones de NOXIS.
             "results": data.get(
                 "results",
                 [],
@@ -759,12 +864,19 @@ class HoleheEngine:
 
             "wakeup": {
                 "success": True,
+
                 "status_code": wakeup.get(
                     "status_code"
                 ),
+
                 "attempts_count": wakeup.get(
                     "attempts_count",
                     1,
+                ),
+
+                "final_probe_used": wakeup.get(
+                    "final_probe_used",
+                    False,
                 ),
             },
         }
