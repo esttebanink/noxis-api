@@ -8,6 +8,7 @@ Motores:
 - Maigret: Username Intelligence
 - Google libphonenumber: Phone Intelligence
 - PhoneInfoga: Phone OSINT
+- Holehe: Email Intelligence
 
 Principio:
 Una coincidencia técnica o una consulta OSINT disponible
@@ -28,6 +29,7 @@ from pydantic import BaseModel, Field
 
 from app.engines.maigret_engine import search_username
 from app.engines.phone_engine import analyze_phone
+from app.engines.holehe_engine import search_holehe
 
 
 # ============================================================
@@ -37,7 +39,7 @@ from app.engines.phone_engine import analyze_phone
 app = FastAPI(
     title="NOXIS API",
     description="API principal de NOXIS Intelligence Platform",
-    version="0.3.1",
+    version="0.4.0",
 )
 
 
@@ -85,6 +87,14 @@ class PhoneSearchRequest(BaseModel):
         min_length=2,
         max_length=2,
         description="Código ISO de región",
+    )
+
+
+class EmailSearchRequest(BaseModel):
+    email: str = Field(
+        ...,
+        min_length=3,
+        description="Correo electrónico a investigar",
     )
 
 
@@ -167,6 +177,7 @@ def extract_osint_summary(
 
     default_summary = {
         "scanners_available": 0,
+        "scanners_skipped": 0,
         "scanners_failed": 0,
         "footprints_found": 0,
         "search_queries_generated": 0,
@@ -215,7 +226,9 @@ def build_reputation(
             else "not_checked"
         ),
         "confirmed": False,
-        "queries_available": len(reputation_items),
+        "queries_available": len(
+            reputation_items
+        ),
         "matches_confirmed": 0,
         "items": reputation_items,
     }
@@ -231,22 +244,32 @@ async def root() -> Dict[str, Any]:
     return {
         "status": "ok",
         "platform": "NOXIS",
-        "api_version": "0.3.1",
+        "api_version": "0.4.0",
         "mode": "live",
+
         "modules": {
             "username_intelligence": True,
             "phone_intelligence": True,
+            "email_intelligence": True,
         },
+
         "engines": {
             "maigret": {
                 "enabled": True,
                 "mode": "live",
             },
+
             "phonenumbers": {
                 "enabled": True,
                 "mode": "live",
             },
+
             "phoneinfoga": {
+                "enabled": True,
+                "mode": "live",
+            },
+
+            "holehe": {
                 "enabled": True,
                 "mode": "live",
             },
@@ -264,7 +287,7 @@ async def health() -> Dict[str, Any]:
     return {
         "status": "ok",
         "platform": "NOXIS",
-        "api_version": "0.3.1",
+        "api_version": "0.4.0",
     }
 
 
@@ -277,13 +300,15 @@ async def api_info() -> Dict[str, Any]:
 
     return {
         "platform": "NOXIS",
-        "api_version": "0.3.1",
+        "api_version": "0.4.0",
         "mode": "live",
+
         "modules": {
             "username_intelligence": {
                 "enabled": True,
                 "engine": "Maigret",
             },
+
             "phone_intelligence": {
                 "enabled": True,
                 "engines": [
@@ -291,7 +316,15 @@ async def api_info() -> Dict[str, Any]:
                     "PhoneInfoga",
                 ],
             },
+
+            "email_intelligence": {
+                "enabled": True,
+                "engines": [
+                    "Holehe",
+                ],
+            },
         },
+
         "principles": {
             "technical_match_is_identity": False,
             "search_query_is_confirmation": False,
@@ -309,7 +342,11 @@ async def username_search(
     request: UsernameSearchRequest,
 ) -> Dict[str, Any]:
 
-    username = request.username.strip().lstrip("@")
+    username = (
+        request.username
+        .strip()
+        .lstrip("@")
+    )
 
     if not username:
         raise HTTPException(
@@ -415,27 +452,38 @@ async def phone_search(
         {},
     )
 
-    if not isinstance(phoneinfoga, dict):
+    if not isinstance(
+        phoneinfoga,
+        dict,
+    ):
         phoneinfoga = {}
 
-    phoneinfoga_status = normalize_phoneinfoga_status(
-        phoneinfoga
+    phoneinfoga_status = (
+        normalize_phoneinfoga_status(
+            phoneinfoga
+        )
     )
 
     # ========================================================
     # FOOTPRINTS
     # ========================================================
 
-    public_footprints = extract_public_footprints(
-        phoneinfoga
+    public_footprints = (
+        extract_public_footprints(
+            phoneinfoga
+        )
     )
 
-    footprint_groups = extract_footprint_groups(
-        phoneinfoga
+    footprint_groups = (
+        extract_footprint_groups(
+            phoneinfoga
+        )
     )
 
-    osint_summary = extract_osint_summary(
-        phoneinfoga
+    osint_summary = (
+        extract_osint_summary(
+            phoneinfoga
+        )
     )
 
     reputation = build_reputation(
@@ -451,17 +499,24 @@ async def phone_search(
         {},
     )
 
-    if not isinstance(existing_engines, dict):
+    if not isinstance(
+        existing_engines,
+        dict,
+    ):
         existing_engines = {}
 
-    technical_engine = existing_engines.get(
-        "technical",
-        {
-            "id": "phonenumbers",
-            "name": "Google libphonenumber",
-            "mode": "live",
-            "status": "completed",
-        },
+    technical_engine = (
+        existing_engines.get(
+            "technical",
+            {
+                "id": "phonenumbers",
+                "name": (
+                    "Google libphonenumber"
+                ),
+                "mode": "live",
+                "status": "completed",
+            },
+        )
     )
 
     osint_engine = {
@@ -484,26 +539,32 @@ async def phone_search(
                 "obtenida mediante libphonenumber."
             ),
         },
+
         "osint_queries": {
             "status": (
                 "available"
                 if public_footprints
                 else "none"
             ),
-            "count": len(public_footprints),
+            "count": len(
+                public_footprints
+            ),
             "confirmed": False,
             "description": (
                 "Consultas OSINT disponibles. "
-                "No representan coincidencias confirmadas."
+                "No representan coincidencias "
+                "confirmadas."
             ),
         },
+
         "confirmed_matches": {
             "status": "none",
             "count": 0,
             "confirmed": False,
             "description": (
-                "NOXIS no confirmó identidad ni presencia "
-                "del número en servicios externos."
+                "NOXIS no confirmó identidad "
+                "ni presencia del número en "
+                "servicios externos."
             ),
         },
     }
@@ -517,30 +578,229 @@ async def phone_search(
             "input",
             phone_number,
         ),
+
         "normalized": result.get(
             "normalized",
             {},
         ),
+
         "validation": result.get(
             "validation",
             {},
         ),
+
         "country": result.get(
             "country",
             {},
         ),
+
         "technical": result.get(
             "technical",
             {},
         ),
+
         "engines": {
             "technical": technical_engine,
             "osint": osint_engine,
         },
+
         "phoneinfoga": phoneinfoga,
-        "public_footprints": public_footprints,
-        "footprint_groups": footprint_groups,
+
+        "public_footprints": (
+            public_footprints
+        ),
+
+        "footprint_groups": (
+            footprint_groups
+        ),
+
         "osint_summary": osint_summary,
+
         "reputation": reputation,
+
+        "evidence": evidence,
+    }
+
+
+# ============================================================
+# EMAIL INTELLIGENCE
+# ============================================================
+
+@app.post("/api/v1/search/email")
+async def email_search(
+    request: EmailSearchRequest,
+) -> Dict[str, Any]:
+
+    email = (
+        request.email
+        .strip()
+        .lower()
+    )
+
+    if not email:
+        raise HTTPException(
+            status_code=400,
+            detail="Correo electrónico requerido",
+        )
+
+    # Validación básica.
+    # La validación detallada también se realiza
+    # en el microservicio Holehe.
+
+    if (
+        "@" not in email
+        or email.startswith("@")
+        or email.endswith("@")
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Formato de correo electrónico inválido"
+            ),
+        )
+
+    try:
+
+        result = search_holehe(
+            email=email
+        )
+
+    except Exception as exc:
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Error ejecutando Email Intelligence: "
+                f"{exc}"
+            ),
+        ) from exc
+
+    if not isinstance(
+        result,
+        dict,
+    ):
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Email Intelligence devolvió "
+                "un formato inesperado"
+            ),
+        )
+
+    # ========================================================
+    # NORMALIZACIÓN
+    # ========================================================
+
+    registered_accounts = result.get(
+        "registered_accounts",
+        [],
+    )
+
+    if not isinstance(
+        registered_accounts,
+        list,
+    ):
+        registered_accounts = []
+
+    summary = result.get(
+        "summary",
+        {},
+    )
+
+    if not isinstance(
+        summary,
+        dict,
+    ):
+        summary = {}
+
+    # ========================================================
+    # EVIDENCE
+    # ========================================================
+
+    technical_match = bool(
+        registered_accounts
+    )
+
+    evidence = {
+        "account_presence": {
+            "status": (
+                "available"
+                if technical_match
+                else "none"
+            ),
+
+            "count": len(
+                registered_accounts
+            ),
+
+            "technical_match": (
+                technical_match
+            ),
+
+            "identity_confirmed": False,
+
+            "description": (
+                "Holehe detecta presencia técnica "
+                "del correo electrónico en servicios "
+                "externos. Una coincidencia técnica "
+                "no confirma la identidad personal."
+            ),
+        },
+
+        "confirmed_identity": {
+            "status": "none",
+            "confirmed": False,
+
+            "description": (
+                "NOXIS no confirma automáticamente "
+                "que las cuentas detectadas pertenezcan "
+                "a una persona específica."
+            ),
+        },
+    }
+
+    # ========================================================
+    # RESPONSE
+    # ========================================================
+
+    return {
+        "input": email,
+
+        "normalized": {
+            "email": email,
+        },
+
+        "status": result.get(
+            "status",
+            "unknown",
+        ),
+
+        "engine": {
+            "id": "holehe",
+            "name": "Holehe",
+            "mode": "live",
+        },
+
+        "service": result.get(
+            "service",
+            {},
+        ),
+
+        "duration_seconds": result.get(
+            "duration_seconds"
+        ),
+
+        "summary": summary,
+
+        "registered_accounts": (
+            registered_accounts
+        ),
+
+        "results": result.get(
+            "results",
+            [],
+        ),
+
         "evidence": evidence,
     }
