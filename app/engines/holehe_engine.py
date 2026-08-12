@@ -36,9 +36,20 @@ class HoleheEngine:
         "https://noxis-holehe.onrender.com"
     )
 
-    DEFAULT_TIMEOUT = 40
-    DEFAULT_RETRIES = 3
-    DEFAULT_RETRY_DELAY = 4
+    # ========================================================
+    # RENDER FREE / COLD START
+    # ========================================================
+    #
+    # Render Free puede tardar bastante en reactivar
+    # una instancia suspendida.
+    #
+    # Aumentamos únicamente la tolerancia de conexión.
+    # No modificamos el contrato de Email Intelligence.
+    # ========================================================
+
+    DEFAULT_TIMEOUT = 45
+    DEFAULT_RETRIES = 6
+    DEFAULT_RETRY_DELAY = 5
 
     RETRYABLE_STATUS_CODES = {
         408,
@@ -340,6 +351,10 @@ class HoleheEngine:
         self,
     ) -> Dict[str, Any]:
 
+        # Los reintentos largos se utilizan aquí,
+        # específicamente para tolerar el cold start
+        # de Render Free.
+
         result = self._request(
             "GET",
             "/health",
@@ -564,10 +579,19 @@ class HoleheEngine:
         # ====================================================
         # SEARCH
         # ====================================================
+        #
+        # Una vez que /health responde correctamente,
+        # ejecutamos la búsqueda real.
+        #
+        # A propósito usamos un único intento para el
+        # POST costoso. No queremos ejecutar seis análisis
+        # completos de 121 módulos por un mismo email.
+        # ====================================================
 
         response = self._request(
             "POST",
             "/api/v1/search/email",
+            retries=1,
             json={
                 "email": normalized_email
             },
@@ -601,7 +625,29 @@ class HoleheEngine:
 
                 "response": response,
 
+                "wakeup": {
+                    "success": True,
+                    "status_code": wakeup.get(
+                        "status_code"
+                    ),
+                    "attempts_count": wakeup.get(
+                        "attempts_count",
+                        1,
+                    ),
+                },
+
+                "summary": {
+                    "sites_checked": 0,
+                    "registered": 0,
+                    "not_registered": 0,
+                    "rate_limited": 0,
+                    "unknown": 0,
+                    "errors": 0,
+                },
+
                 "registered_accounts": [],
+
+                "results": [],
             }
 
         data = response.get(
