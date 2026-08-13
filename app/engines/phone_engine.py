@@ -7,6 +7,7 @@ from phonenumbers import timezone
 from phonenumbers.phonenumberutil import NumberParseException
 
 from app.engines.phoneinfoga_engine import PhoneInfogaEngine
+from app.engines.calltracer_engine import CallTracerEngine
 
 
 # ============================================================
@@ -14,6 +15,7 @@ from app.engines.phoneinfoga_engine import PhoneInfogaEngine
 # ============================================================
 
 phoneinfoga_engine = PhoneInfogaEngine()
+calltracer_engine = CallTracerEngine()
 
 
 def get_number_type(parsed_number) -> str:
@@ -198,6 +200,31 @@ async def analyze_phone(
     )
 
     # ========================================================
+    # CALLTRACER — REPUTACIÓN
+    # ========================================================
+
+    try:
+        calltracer_result = calltracer_engine.search(
+            phone_number=e164,
+            default_region=default_region,
+        )
+
+    except Exception as exc:
+        calltracer_result = {
+            "status": "error",
+            "engine": {
+                "id": "calltracer",
+                "name": "CallTracer",
+                "mode": "live",
+            },
+            "reported": False,
+            "spam_score": None,
+            "reports_count": 0,
+            "error": "calltracer_exception",
+            "message": str(exc),
+        }
+
+    # ========================================================
     # RESPUESTA FINAL
     # ========================================================
 
@@ -248,9 +275,21 @@ async def analyze_phone(
                     "unknown",
                 ),
             },
+
+            "reputation": {
+                "id": "calltracer",
+                "name": "CallTracer",
+                "mode": "live",
+                "status": calltracer_result.get(
+                    "status",
+                    "unknown",
+                ),
+            },
         },
 
         "phoneinfoga": phoneinfoga_result,
+
+        "calltracer": calltracer_result,
 
         "public_footprints": public_footprints,
 
