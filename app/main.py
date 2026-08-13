@@ -31,6 +31,7 @@ from app.engines.maigret_engine import search_username
 from app.engines.phone_engine import analyze_phone
 from app.engines.holehe_engine import search_holehe
 from app.engines.calltracer_engine import search_calltracer
+from app.engines.openspam_engine import search_openspam
 
 
 # ============================================================
@@ -104,6 +105,20 @@ class CallTracerTestRequest(BaseModel):
         ...,
         min_length=1,
         description="Número para prueba aislada de CallTracer",
+    )
+
+    default_region: str = Field(
+        default="AR",
+        min_length=2,
+        max_length=2,
+    )
+
+
+class OpenSpamTestRequest(BaseModel):
+    phone_number: str = Field(
+        ...,
+        min_length=1,
+        description="Número para prueba aislada de OpenSpam",
     )
 
     default_region: str = Field(
@@ -825,6 +840,46 @@ async def calltracer_test(
             detail=(
                 "Error ejecutando prueba aislada "
                 f"de CallTracer: {exc}"
+            ),
+        ) from exc
+
+
+# ============================================================
+# OPENSPAM — ENDPOINT TEMPORAL DE PRUEBA
+# ============================================================
+
+@app.post("/api/v1/test/openspam")
+async def openspam_test(
+    request: OpenSpamTestRequest,
+) -> Dict[str, Any]:
+
+    phone_number = request.phone_number.strip()
+
+    default_region = (
+        request.default_region
+        or "AR"
+    ).strip().upper()
+
+    if not phone_number:
+        raise HTTPException(
+            status_code=400,
+            detail="Número de teléfono requerido",
+        )
+
+    try:
+
+        return search_openspam(
+            phone_number=phone_number,
+            default_region=default_region,
+        )
+
+    except Exception as exc:
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Error ejecutando prueba aislada "
+                f"de OpenSpam: {exc}"
             ),
         ) from exc
 
