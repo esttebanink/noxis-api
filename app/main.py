@@ -480,6 +480,118 @@ async def phone_search(
     )
 
     # ========================================================
+    # CALLTRACER
+    # ========================================================
+
+    calltracer = result.get(
+        "calltracer",
+        {},
+    )
+
+    if not isinstance(
+        calltracer,
+        dict,
+    ):
+        calltracer = {}
+
+    calltracer_status = calltracer.get(
+        "status",
+        "unknown",
+    )
+
+    valid_calltracer_statuses = {
+        "completed",
+        "not_found",
+        "rate_limited",
+        "timeout",
+        "unavailable",
+        "error",
+    }
+
+    if calltracer_status not in valid_calltracer_statuses:
+        calltracer_status = "error"
+
+    calltracer_available = (
+        calltracer_status
+        in {
+            "completed",
+            "not_found",
+        }
+    )
+
+    calltracer_reported = (
+        calltracer.get("reported") is True
+    )
+
+    calltracer_spam_score = (
+        calltracer.get("spam_score")
+    )
+
+    if not calltracer_available:
+        reputation_risk = "unknown"
+
+    elif not calltracer_reported:
+        reputation_risk = "low"
+
+    elif calltracer_spam_score is None:
+        reputation_risk = "medium"
+
+    else:
+        try:
+            numeric_spam_score = float(
+                calltracer_spam_score
+            )
+
+            if numeric_spam_score < 40:
+                reputation_risk = "low"
+            elif numeric_spam_score < 70:
+                reputation_risk = "medium"
+            else:
+                reputation_risk = "high"
+
+        except (TypeError, ValueError):
+            reputation_risk = "medium"
+
+    reputation_sources = {
+        "calltracer": {
+            "status": calltracer_status,
+            "reported": calltracer_reported,
+            "spam_score": calltracer_spam_score,
+            "reports_count": calltracer.get(
+                "reports_count",
+                0,
+            ),
+            "last_reported_at": calltracer.get(
+                "last_reported_at"
+            ),
+            "category": calltracer.get(
+                "category"
+            ),
+            "normalized_category": calltracer.get(
+                "normalized_category"
+            ),
+            "confirmed_fraud": False,
+        }
+    }
+
+    reputation_summary = {
+        "sources_checked": 1,
+        "sources_available": (
+            1
+            if calltracer_available
+            else 0
+        ),
+        "sources_reporting": (
+            1
+            if calltracer_reported
+            else 0
+        ),
+        "reported": calltracer_reported,
+        "spam_score": calltracer_spam_score,
+        "risk": reputation_risk,
+    }
+
+    # ========================================================
     # FOOTPRINTS
     # ========================================================
 
@@ -541,6 +653,13 @@ async def phone_search(
         "status": phoneinfoga_status,
     }
 
+    reputation_engine = {
+        "id": "calltracer",
+        "name": "CallTracer",
+        "mode": "live",
+        "status": calltracer_status,
+    }
+
     # ========================================================
     # EVIDENCE
     # ========================================================
@@ -582,6 +701,28 @@ async def phone_search(
                 "servicios externos."
             ),
         },
+
+        "reputation": {
+            "status": (
+                "available"
+                if calltracer_available
+                else "unavailable"
+            ),
+            "reported": calltracer_reported,
+            "reports_count": calltracer.get(
+                "reports_count",
+                0,
+            ),
+            "spam_score": calltracer_spam_score,
+            "source": "CallTracer",
+            "confirmed_fraud": False,
+            "description": (
+                "Reputación comunitaria del número "
+                "según CallTracer. Los reportes no "
+                "confirman por sí solos fraude "
+                "ni identidad."
+            ),
+        },
     }
 
     # ========================================================
@@ -617,9 +758,12 @@ async def phone_search(
         "engines": {
             "technical": technical_engine,
             "osint": osint_engine,
+            "reputation": reputation_engine,
         },
 
         "phoneinfoga": phoneinfoga,
+
+        "calltracer": calltracer,
 
         "public_footprints": (
             public_footprints
@@ -632,6 +776,14 @@ async def phone_search(
         "osint_summary": osint_summary,
 
         "reputation": reputation,
+
+        "reputation_sources": (
+            reputation_sources
+        ),
+
+        "reputation_summary": (
+            reputation_summary
+        ),
 
         "evidence": evidence,
     }
