@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 from app.engines.maigret_engine import search_username
 from app.engines.phone_engine import analyze_phone
 from app.engines.holehe_engine import search_holehe
+from app.engines.calltracer_engine import search_calltracer
 
 
 # ============================================================
@@ -95,6 +96,20 @@ class EmailSearchRequest(BaseModel):
         ...,
         min_length=3,
         description="Correo electrónico a investigar",
+    )
+
+
+class CallTracerTestRequest(BaseModel):
+    phone_number: str = Field(
+        ...,
+        min_length=1,
+        description="Número para prueba aislada de CallTracer",
+    )
+
+    default_region: str = Field(
+        default="AR",
+        min_length=2,
+        max_length=2,
     )
 
 
@@ -620,6 +635,46 @@ async def phone_search(
 
         "evidence": evidence,
     }
+
+
+# ============================================================
+# CALLTRACER — ENDPOINT TEMPORAL DE PRUEBA
+# ============================================================
+
+@app.post("/api/v1/test/calltracer")
+async def calltracer_test(
+    request: CallTracerTestRequest,
+) -> Dict[str, Any]:
+
+    phone_number = request.phone_number.strip()
+
+    default_region = (
+        request.default_region
+        or "AR"
+    ).strip().upper()
+
+    if not phone_number:
+        raise HTTPException(
+            status_code=400,
+            detail="Número de teléfono requerido",
+        )
+
+    try:
+
+        return search_calltracer(
+            phone_number=phone_number,
+            default_region=default_region,
+        )
+
+    except Exception as exc:
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Error ejecutando prueba aislada "
+                f"de CallTracer: {exc}"
+            ),
+        ) from exc
 
 
 # ============================================================
