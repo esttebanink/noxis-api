@@ -162,6 +162,35 @@ class OpenSpamEngine:
         value = response.headers.get("Retry-After")
         return value.strip() if isinstance(value, str) and value.strip() else None
 
+    @classmethod
+    def _safe_provider_payload(cls, value: Any) -> Any:
+        sensitive_keys = {
+            "api_key",
+            "apikey",
+            "x-api-key",
+            "authorization",
+            "cookie",
+            "cookies",
+            "token",
+            "access_token",
+            "refresh_token",
+        }
+
+        if isinstance(value, dict):
+            return {
+                key: cls._safe_provider_payload(item)
+                for key, item in value.items()
+                if str(key).strip().lower() not in sensitive_keys
+            }
+
+        if isinstance(value, list):
+            return [
+                cls._safe_provider_payload(item)
+                for item in value
+            ]
+
+        return value
+
     def _request(self, method: str, endpoint: str) -> Dict[str, Any]:
         url = f"{self.base_url}{endpoint}"
         max_attempts = min(max(self.retries, 1), self.DEFAULT_RETRIES)
@@ -470,10 +499,26 @@ class OpenSpamEngine:
 
         status_code = response.get("status_code")
         error = response.get("error")
+        provider_diagnostics = None
 
         if status_code in {401, 403}:
             status = "configuration_required"
             normalized_error = "authentication_failed"
+
+            provider_payload = response.get("data")
+            safe_provider_payload = self._safe_provider_payload(
+                provider_payload
+                if isinstance(provider_payload, dict)
+                else {}
+            )
+
+            provider_diagnostics = {
+                "status_code": status_code,
+                "response": safe_provider_payload,
+                "api_key_configured": bool(self.api_key),
+                "api_key_prefix_valid": self.api_key.startswith("sk-"),
+            }
+
             logger.warning("openspam_configuration_required")
         elif status_code == 429 or error == "rate_limited":
             status = "rate_limited"
@@ -502,7 +547,10 @@ class OpenSpamEngine:
         result["error"] = normalized_error
         if response.get("retry_after") is not None:
             result["retry_after"] = response["retry_after"]
-        if isinstance(response.get("data"), dict):
+        if provider_diagnostics is not None:
+            result["provider_diagnostics"] = provider_diagnostics
+            result["raw"] = provider_diagnostics["response"]
+        elif isinstance(response.get("data"), dict):
             result["raw"] = response["data"]
         return result
 
